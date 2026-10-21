@@ -1,7 +1,41 @@
-# Tauri + React + Typescript
+# Aitu
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+Неофициальный клиент [Aitu](https://aitu.io) для Windows. Веб-версия долго отправляет сообщения, вместо эмодзи показывает стикеры и не даёт разложить чаты по папкам. Это окно оставляет обычную переписку и даёт настроить вид под себя.
 
-## Recommended IDE Setup
+На иконке улитка сидит на букве A: официальный клиент никуда не торопится.
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+Проект не связан с BTS Digital. Вход идёт в ваш собственный аккаунт через окно Passport.
+
+## Что уже есть
+
+- Список чатов, история и отправка текста
+- Эмодзи
+- Папки в духе Telegram: «Все», «Личные», «Группы», «Каналы» и свои
+- Светлая и тёмная тема, свой цвет акцента, шрифт, размер, плотность списка и фон чата
+
+Папки и оформление остаются на этом компьютере. Переписка подтягивается из аккаунта Aitu.
+
+## Чего пока нет
+
+Звонки, музыка, кошелёк, мини-приложения и отправка файлов.
+
+## Запуск
+
+Нужны Windows 10 или 11, WebView2, Node.js 20 и Rust со сборкой MSVC (Visual Studio Build Tools).
+
+```bash
+npm install --legacy-peer-deps
+npm run tauri dev
+```
+
+Vite закреплён на 6-й линейке: более новая версия требует Node.js 20.19 или новее.
+
+Установщик:
+
+```bash
+npm run tauri build
+```
+
+## Как устроено
+
+Интерфейс — React и TypeScript на Vite, окно — Tauri 2. Запросы к Aitu выполняет Rust: страница в окне не может сама сходить в API с сессионной cookie.
