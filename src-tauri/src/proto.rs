@@ -491,11 +491,12 @@ fn media_file(raw: &[u8]) -> Result<Option<RemoteFile>, String> {
         let Some((id, name, size)) = nested_file(part)? else {
             continue;
         };
+        let resolved = if is_voice_name(&name) { "audio" } else { kind };
         return Ok(Some(RemoteFile {
             id,
             name,
             size,
-            kind: kind.to_string(),
+            kind: resolved.to_string(),
         }));
     }
     Ok(None)
@@ -529,7 +530,7 @@ fn preview_label(text: &str, files: &[RemoteFile]) -> String {
     match files.first() {
         Some(file) if file.kind == "image" || file.kind == "gif" => "Фото".to_string(),
         Some(file) if file.kind == "video" => "Видео".to_string(),
-        Some(file) if file.kind == "audio" && is_voice_name(&file.name) => "Голосовое сообщение".to_string(),
+        Some(file) if is_voice_name(&file.name) => "Голосовое сообщение".to_string(),
         Some(file) if file.kind == "audio" || file.kind == "music" => "Аудио".to_string(),
         Some(file) if file.kind == "sticker" => "Стикер".to_string(),
         Some(file) if !file.name.is_empty() => file.name.clone(),
@@ -874,6 +875,47 @@ mod tests {
         assert_eq!(messages[0].files[0].name, "заметка.txt");
         assert_eq!(messages[0].files[0].kind, "file");
         assert_eq!(messages[0].files[0].size, 120);
+    }
+
+    #[test]
+    fn voice_recording_stored_as_a_file_stays_playable_audio() {
+        let mut stored = Vec::new();
+        write_str(&mut stored, 1, "11111111-2222-3333-4444-555555555555");
+        write_str(&mut stored, 3, "voice.wav");
+        write_var(&mut stored, 4, 191_000);
+        let mut document = Vec::new();
+        write_msg(&mut document, 1, &stored);
+        let mut media = Vec::new();
+        write_msg(&mut media, 11, &document);
+        let mut data = Vec::new();
+        write_msg(&mut data, 3, &media);
+        let peer = encode_peer("u1", 0);
+        let mut message = Vec::new();
+        write_str(&mut message, 1, "m-voice");
+        write_var(&mut message, 2, 1_700_000_000_000);
+        write_msg(&mut message, 4, &peer);
+        write_msg(&mut message, 12, &data);
+        let mut root = Vec::new();
+        write_msg(&mut root, 2, &message);
+
+        let messages = parse_history(&root, "me", "USER").unwrap();
+        assert_eq!(messages[0].files[0].name, "voice.wav");
+        assert_eq!(messages[0].files[0].kind, "audio");
+
+        let mut user = Vec::new();
+        write_str(&mut user, 1, "u1");
+        write_str(&mut user, 2, "Айгерим");
+        let mut dialog = Vec::new();
+        write_msg(&mut dialog, 1, &peer);
+        write_var(&mut dialog, 3, 1_700_000_000_000);
+        let mut dialogs = Vec::new();
+        write_msg(&mut dialogs, 1, &dialog);
+        write_msg(&mut dialogs, 2, &user);
+        write_msg(&mut dialogs, 3, &message);
+        let mut wrapped = Vec::new();
+        write_msg(&mut wrapped, 2, &dialogs);
+        let chats = parse_dialogs(&wrapped).unwrap();
+        assert_eq!(chats[0].preview, "Голосовое сообщение");
     }
 
     #[test]

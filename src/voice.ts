@@ -10,12 +10,14 @@ export function formatVoiceTime(ms: number): string {
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
-export function isVoiceFile(file: { kind: string; name: string; localUrl?: string }): boolean {
-  return file.kind === "audio" && (Boolean(file.localUrl) || /^voice\./i.test(file.name));
+const VOICE_NAME = /^voice\.(wav|webm|ogg|m4a|mp3)$/i;
+
+export function isVoiceFile(file: { name: string }): boolean {
+  return VOICE_NAME.test(file.name.trim());
 }
 
 export function voicePreview(name: string): string | null {
-  return /^voice\.(wav|webm|ogg|m4a|mp3)$/i.test(name.trim()) ? "Голосовое сообщение" : null;
+  return isVoiceFile({ name }) ? "Голосовое сообщение" : null;
 }
 
 export function voiceFileName(mime: string): string {

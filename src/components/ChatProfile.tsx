@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { explain, mediaSrc, openAttachment } from "../api";
+import { isVoiceFile } from "../voice";
 import { chatSubtitle } from "../data";
 import type { Chat, ChatFile, Message } from "../types";
 import { Avatar } from "./Avatar";
@@ -156,7 +157,7 @@ function collectMedia(messages: Message[]) {
       seen.add(key);
       if (file.kind === "image" || file.kind === "gif") photos.push(file);
       else if (file.kind === "video") videos.push(file);
-      else if (file.kind === "audio" || file.kind === "music") audios.push(file);
+      else if (isVoiceFile(file) || file.kind === "audio" || file.kind === "music") audios.push(file);
       else if (file.kind !== "sticker") files.push(file);
     }
   }
