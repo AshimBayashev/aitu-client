@@ -442,11 +442,17 @@ textarea::placeholder,
   font-size: 0.62rem;
 }
 
-.thread-body { flex: 1; overflow: auto; }
+.thread-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overflow-anchor: none;
+}
 
 .messages {
   display: flex;
   flex-direction: column;
+  justify-content: flex-end;
   padding: 18px 18px 8px;
   min-height: 100%;
 }
@@ -831,6 +837,51 @@ textarea::placeholder,
 }
 
 .voice-record span { color: var(--muted); }
+
+.composer-reply {
+  flex: 1 0 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1px 8px;
+  padding: 6px 6px 6px 10px;
+  border-left: 2px solid var(--accent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.composer-reply .reply-text { grid-column: 1; }
+
+.composer-reply button {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  align-self: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.composer-reply button:hover { background: var(--hover); color: var(--text); }
+
+.msg-menu { width: auto; min-width: 168px; padding: 6px; }
+
+.msg-menu button {
+  width: 100%;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+.msg-menu button:hover { background: var(--hover); }
 
 .composer-hint {
   flex: 1 0 100%;

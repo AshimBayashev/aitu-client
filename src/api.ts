@@ -81,8 +81,9 @@ export function sendRemote(
   localId: string,
   text: string,
   paths: string[],
+  replyTo?: string,
 ): Promise<void> {
-  return invoke<void>("send_message", { peerId, peerType, localId, text, paths });
+  return invoke<void>("send_message", { peerId, peerType, localId, text, paths, replyTo: replyTo ?? null });
 }
 
 export function sendVoiceRemote(
@@ -91,8 +92,9 @@ export function sendVoiceRemote(
   localId: string,
   data: string,
   mime: string,
+  replyTo?: string,
 ): Promise<void> {
-  return invoke<void>("send_voice", { peerId, peerType, localId, data, mime });
+  return invoke<void>("send_voice", { peerId, peerType, localId, data, mime, replyTo: replyTo ?? null });
 }
 
 export function openAttachment(fileId: string, name: string): Promise<void> {

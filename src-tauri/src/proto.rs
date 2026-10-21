@@ -97,6 +97,24 @@ pub fn encode_send(
     out
 }
 
+pub fn encode_reply(
+    message_id: &str,
+    peer_id: &str,
+    peer_type: i32,
+    local_id: &str,
+    text: &str,
+    files: &[(String, String, i32)],
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    write_str(&mut out, 1, message_id);
+    write_msg(
+        &mut out,
+        2,
+        &encode_send(peer_id, peer_type, local_id, text, files),
+    );
+    out
+}
+
 fn encode_input_media(file_id: &str, name: &str, kind: i32) -> Vec<u8> {
     let mut out = Vec::new();
     write_str(&mut out, 1, file_id);
@@ -782,6 +800,16 @@ mod tests {
     #[test]
     fn peer_bytes_match_the_wire_format() {
         assert_eq!(encode_peer("ab", 0), vec![0x0a, 0x02, b'a', b'b', 0x10, 0x00]);
+    }
+
+    #[test]
+    fn reply_command_names_the_message_and_carries_the_text() {
+        let bytes = encode_reply("m-origin", "u1", 0, "local", "Да", &[]);
+        let fields = read_fields(&bytes).unwrap();
+        assert_eq!(text(&fields, 1), "m-origin");
+        let nested = read_fields(first_msg(&fields, 2).unwrap()).unwrap();
+        assert_eq!(text(&nested, 2), "local");
+        assert_eq!(text(&nested, 3), "Да");
     }
 
     #[test]

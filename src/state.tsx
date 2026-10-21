@@ -29,7 +29,7 @@ import {
 import { CHATS, DEFAULT_SETTINGS, seedFolders, seedMessages, seedUnread } from "./data";
 import { loadState, saveState } from "./storage";
 import { bytesToBase64, voiceFileName } from "./voice";
-import type { Chat, Folder, FolderDraft, Message, Settings } from "./types";
+import type { Chat, Folder, FolderDraft, Message, MessageReply, Settings } from "./types";
 
 export type Connection = "demo" | "checking" | "signed-out" | "connecting" | "live";
 
@@ -56,8 +56,8 @@ type AppModel = {
   resetLocal: () => void;
   setActiveFolder: (folderId: string) => void;
   selectChat: (chatId: string) => void;
-  sendMessage: (chatId: string, text: string, paths?: string[]) => void;
-  sendVoice: (chatId: string, audio: Blob) => void;
+  sendMessage: (chatId: string, text: string, paths?: string[], reply?: MessageReply) => void;
+  sendVoice: (chatId: string, audio: Blob, reply?: MessageReply) => void;
   rememberEmoji: (char: string) => void;
   setSettingsOpen: (open: boolean) => void;
   openCreateFolder: () => void;
@@ -377,7 +377,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setActiveChatId(chatId);
         setUnread((current) => ({ ...current, [chatId]: 0 }));
       },
-      sendMessage: (chatId, text, paths = []) => {
+      sendMessage: (chatId, text, paths = [], reply) => {
         const trimmed = text.trim();
         if (!trimmed && paths.length === 0) return;
         const id = crypto.randomUUID();
@@ -394,6 +394,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             size: 0,
             kind: "file",
           })),
+          reply: reply?.id ? reply : undefined,
         };
         setMessages((current) => ({
           ...current,
@@ -412,7 +413,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           return;
         }
         const peerType = chat.peerType;
-        void sendRemote(chatId, peerType, id, trimmed, paths)
+        void sendRemote(chatId, peerType, id, trimmed, paths, reply?.id)
           .then(async () => {
             try {
               const incoming = (await listHistory(chatId, peerType)).map((item) => toMessage(chatId, item));
@@ -435,7 +436,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             }));
           });
       },
-      sendVoice: (chatId, audio) => {
+      sendVoice: (chatId, audio, reply) => {
         if (audio.size === 0) return;
         const id = crypto.randomUUID();
         const name = voiceFileName(audio.type);
@@ -448,6 +449,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           sentAt: Date.now(),
           delivery: "sending",
           files: [{ id: "", name, size: audio.size, kind: "audio", localUrl }],
+          reply: reply?.id ? reply : undefined,
         };
         setMessages((current) => ({
           ...current,
@@ -468,7 +470,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const mime = audio.type.split(";")[0] || "audio/wav";
         void audio
           .arrayBuffer()
-          .then((buffer) => sendVoiceRemote(chatId, peerType, id, bytesToBase64(new Uint8Array(buffer)), mime))
+          .then((buffer) => sendVoiceRemote(chatId, peerType, id, bytesToBase64(new Uint8Array(buffer)), mime, reply?.id))
           .then(async () => {
             try {
               const incoming = (await listHistory(chatId, peerType)).map((item) => toMessage(chatId, item));

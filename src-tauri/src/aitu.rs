@@ -158,7 +158,7 @@ pub async fn begin_login(app: AppHandle, state: State<'_, AituState>) -> Result<
     let url = Url::parse(&oauth).map_err(|err| err.to_string())?;
     state.login_done.store(false, Ordering::SeqCst);
     let window = WebviewWindowBuilder::new(&app, LOGIN_WINDOW, WebviewUrl::External(url))
-        .title("Вход в Aitu")
+        .title("Aitu здорового человека")
         .inner_size(460.0, 740.0)
         .center()
         .on_page_load(|window, payload| {
@@ -317,7 +317,7 @@ fn incoming_alerts(
             continue;
         }
         let title = if chat.title.trim().is_empty() {
-            "Aitu".to_string()
+            "Aitu здорового человека".to_string()
         } else {
             chat.title.clone()
         };
@@ -390,6 +390,7 @@ pub async fn send_message(
     local_id: String,
     text: String,
     paths: Vec<String>,
+    reply_to: Option<String>,
 ) -> Result<(), String> {
     let caption = text.trim().to_string();
     if caption.is_empty() && paths.is_empty() {
@@ -403,17 +404,13 @@ pub async fn send_message(
         let uploaded = upload_file(&state.http, &cookie, &installation, path).await?;
         files.push(uploaded);
     }
-    let method = if peer_type == "CHANNEL" {
-        "SendChannelMessage"
-    } else {
-        "SendMessage"
-    };
+    let (method, body) = outgoing(&peer_type, reply_to.as_deref(), &peer_id, code, &local_id, &caption, &files);
     grpc(
         &state.http,
         &cookie,
         &installation,
         &format!("/kz.btsd.messenger.messages.MessageService/{method}"),
-        proto::encode_send(&peer_id, code, &local_id, &caption, &files),
+        body,
     )
     .await?;
     Ok(())
@@ -427,6 +424,7 @@ pub async fn send_voice(
     local_id: String,
     data: String,
     mime: String,
+    reply_to: Option<String>,
 ) -> Result<(), String> {
     let (name, content_type) = voice_file(&mime)?;
     let bytes = STANDARD
@@ -451,20 +449,43 @@ pub async fn send_voice(
         3,
     )
     .await?;
-    let method = if peer_type == "CHANNEL" {
-        "SendChannelMessage"
-    } else {
-        "SendMessage"
-    };
+    let (method, body) = outgoing(&peer_type, reply_to.as_deref(), &peer_id, code, &local_id, "", &[uploaded]);
     grpc(
         &state.http,
         &cookie,
         &installation,
         &format!("/kz.btsd.messenger.messages.MessageService/{method}"),
-        proto::encode_send(&peer_id, code, &local_id, "", &[uploaded]),
+        body,
     )
     .await?;
     Ok(())
+}
+
+fn outgoing(
+    peer_type: &str,
+    reply_to: Option<&str>,
+    peer_id: &str,
+    code: i32,
+    local_id: &str,
+    text: &str,
+    files: &[(String, String, i32)],
+) -> (String, Vec<u8>) {
+    let reply = reply_to.unwrap_or("").trim();
+    if !reply.is_empty() {
+        return (
+            "ReplyMessage".to_string(),
+            proto::encode_reply(reply, peer_id, code, local_id, text, files),
+        );
+    }
+    let method = if peer_type == "CHANNEL" {
+        "SendChannelMessage"
+    } else {
+        "SendMessage"
+    };
+    (
+        method.to_string(),
+        proto::encode_send(peer_id, code, local_id, text, files),
+    )
 }
 
 fn voice_file(mime: &str) -> Result<(&'static str, &'static str), String> {

@@ -1,15 +1,36 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { explain, inDesktop, mediaSrc, openAttachment } from "../api";
 import { chatSubtitle, formatStamp } from "../data";
 import { MessageText } from "../messageText";
 import { useApp } from "../state";
-import type { ChatFile } from "../types";
-import { formatVoiceTime, isVoiceFile, MAX_VOICE_MS, MIN_VOICE_MS, preferredAudioMime, toVoiceWav } from "../voice";
+import type { ChatFile, Message, MessageReply } from "../types";
+import { formatVoiceTime, isVoiceFile, MAX_VOICE_MS, MIN_VOICE_MS, preferredAudioMime, toVoiceWav, voicePreview } from "../voice";
 import { Avatar } from "./Avatar";
 import { ChatProfile } from "./ChatProfile";
 import { EmojiPicker } from "./EmojiPicker";
 import { IconCheck, IconClip, IconClose, IconMic, IconPause, IconPlay, IconSend, IconSmile } from "./icons";
+
+function replyQuote(message: Message, title: string): MessageReply {
+  const author = message.outgoing ? "Вы" : message.author || title;
+  const flat = message.text.replace(/\s+/g, " ").trim();
+  const file = message.files?.[0];
+  const label =
+    flat ||
+    (file
+      ? voicePreview(file.name) ||
+        (file.kind === "image" || file.kind === "gif"
+          ? "Фото"
+          : file.kind === "video"
+            ? "Видео"
+            : file.kind === "audio" || file.kind === "music"
+              ? "Аудио"
+              : file.name || "Файл")
+      : "") ||
+    "Сообщение";
+  const chars = [...label];
+  return { id: message.id, author, text: chars.length > 140 ? `${chars.slice(0, 140).join("")}…` : label };
+}
 
 export function Thread() {
   const {
@@ -36,8 +57,18 @@ export function Thread() {
   const [recording, setRecording] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [recordHint, setRecordHint] = useState("");
+  const [reply, setReply] = useState<MessageReply | null>(null);
+  const [menu, setMenu] = useState<{ id: string; left: number; top: number } | null>(null);
   const areaRef = useRef<HTMLTextAreaElement>(null);
-  const endRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const stickRef = useRef(true);
+  const replyRef = useRef<MessageReply | null>(null);
+  const seenChatRef = useRef(activeChatId);
+  replyRef.current = reply;
+  if (seenChatRef.current !== activeChatId) {
+    seenChatRef.current = activeChatId;
+    stickRef.current = true;
+  }
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -109,7 +140,9 @@ export function Thread() {
       voice = blob;
     }
     if (cancelledRef.current) return;
-    sendVoice(chatId, voice);
+    stickRef.current = true;
+    sendVoice(chatId, voice, replyRef.current ?? undefined);
+    setReply(null);
   }
 
   async function startRecording() {
@@ -159,6 +192,9 @@ export function Thread() {
     setFiles([]);
     setPickerOpen(false);
     setRecordHint("");
+    setReply(null);
+    setMenu(null);
+    stickRef.current = true;
     discardRecording();
   }, [activeChatId]);
 
@@ -183,9 +219,70 @@ export function Thread() {
     return () => window.removeEventListener("keydown", onKey);
   }, [profileOpen]);
 
+  function pinBottom() {
+    const node = bodyRef.current;
+    if (!node || !stickRef.current) return;
+    node.scrollTop = node.scrollHeight;
+  }
+
+  useLayoutEffect(() => {
+    pinBottom();
+  }, [activeChatId, items, profileOpen]);
+
   useEffect(() => {
-    endRef.current?.scrollIntoView({ block: "end" });
-  }, [activeChatId, items.length, items[items.length - 1]?.delivery, profileOpen]);
+    const node = bodyRef.current;
+    if (!node) return;
+    let fromUser = false;
+    const mark = () => {
+      fromUser = true;
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.target === node) mark();
+    };
+    const onScroll = () => {
+      if (!fromUser) return;
+      fromUser = false;
+      const gap = node.scrollHeight - node.scrollTop - node.clientHeight;
+      stickRef.current = gap < 80;
+    };
+    const content = node.querySelector(".messages");
+    const observer = new ResizeObserver(() => pinBottom());
+    if (content) observer.observe(content);
+    node.addEventListener("wheel", mark, { passive: true });
+    node.addEventListener("touchmove", mark, { passive: true });
+    node.addEventListener("pointerdown", onPointerDown);
+    node.addEventListener("scroll", onScroll, { passive: true });
+    const frame = requestAnimationFrame(() => pinBottom());
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      node.removeEventListener("wheel", mark);
+      node.removeEventListener("touchmove", mark);
+      node.removeEventListener("pointerdown", onPointerDown);
+      node.removeEventListener("scroll", onScroll);
+    };
+  }, [activeChatId]);
+
+  useEffect(() => {
+    if (!menu && !reply) return;
+    const closeMenu = () => setMenu(null);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (menu) {
+        setMenu(null);
+        return;
+      }
+      if (!recording && !profileOpen && !pickerOpen) setReply(null);
+    };
+    window.addEventListener("pointerdown", closeMenu);
+    window.addEventListener("scroll", closeMenu, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", closeMenu);
+      window.removeEventListener("scroll", closeMenu, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [menu, pickerOpen, profileOpen, recording, reply]);
 
   useEffect(() => {
     const area = areaRef.current;
@@ -219,16 +316,38 @@ export function Thread() {
     if (!chat) return;
     const text = draft;
     if (!text.trim() && files.length === 0) return;
-    sendMessage(chat.id, text, files);
+    stickRef.current = true;
+    sendMessage(chat.id, text, files, reply ?? undefined);
     setDraft("");
     setFiles([]);
+    setReply(null);
     setPickerOpen(false);
+  }
+
+  function openMessageMenu(message: Message, x: number, y: number) {
+    if (message.delivery !== "sent") return;
+    const width = 180;
+    const height = 48;
+    setMenu({
+      id: message.id,
+      left: Math.max(8, Math.min(x, window.innerWidth - width - 8)),
+      top: Math.max(8, Math.min(y, window.innerHeight - height - 8)),
+    });
+  }
+
+  function beginReply(id: string) {
+    const message = items.find((item) => item.id === id);
+    if (!message || !chat) return;
+    setReply(replyQuote(message, chat.title));
+    setMenu(null);
+    requestAnimationFrame(() => areaRef.current?.focus());
   }
 
   function showReply(id: string) {
     if (!id) return;
     const node = document.getElementById(`msg-${id}`);
     if (!node) return;
+    stickRef.current = false;
     node.scrollIntoView({ block: "center", behavior: "smooth" });
     node.classList.remove("msg-flash");
     void node.offsetWidth;
@@ -245,7 +364,7 @@ export function Thread() {
             <h2>Подключаемся…</h2>
           ) : signingIn ? (
             <>
-              <h2>Войдите в Aitu</h2>
+              <h2>Aitu здорового человека</h2>
               <p>Откроется окно паспорта. Код из SMS вводите только там.</p>
               {loginError && <p className="login-error">{loginError}</p>}
               <button type="button" className="primary" disabled={connection === "connecting"} onClick={login}>
@@ -293,7 +412,7 @@ export function Thread() {
           {connection === "live" ? accountName || "Aitu" : "Локально"}
         </span>
       </header>
-      <div className={`thread-body bg-${settings.chatBg}`}>
+      <div className={`thread-body bg-${settings.chatBg}`} ref={bodyRef}>
         <div className="messages">
           {connection === "live" && !historyReady[chat.id] && <p className="empty-copy">Загружаем сообщения…</p>}
           {historyError && <p className="login-error history-error">{historyError}</p>}
@@ -313,6 +432,11 @@ export function Thread() {
                   message.outgoing ? "out" : "in",
                   grouped ? "grouped" : "group-start",
                 ].join(" ")}
+                onContextMenu={(event) => {
+                  if (event.target instanceof Element && event.target.closest("a")) return;
+                  event.preventDefault();
+                  openMessageMenu(message, event.clientX, event.clientY);
+                }}
               >
                 <div className="bubble">
                   {message.author && !grouped && <span className="author">{message.author}</span>}
@@ -352,7 +476,6 @@ export function Thread() {
               </article>
             );
           })}
-          <div ref={endRef} />
         </div>
       </div>
       <form
@@ -366,6 +489,15 @@ export function Thread() {
           submit();
         }}
       >
+        {reply && (
+          <div className="composer-reply">
+            <span className="reply-author">{reply.author}</span>
+            <span className="reply-text">{reply.text}</span>
+            <button type="button" aria-label="Отменить ответ" onClick={() => setReply(null)}>
+              <IconClose />
+            </button>
+          </div>
+        )}
         {files.length > 0 && (
           <div className="pending-files">
             {files.map((path) => (
@@ -419,7 +551,10 @@ export function Thread() {
                 event.preventDefault();
                 submit();
               }
-              if (event.key === "Escape") setPickerOpen(false);
+              if (event.key === "Escape") {
+                if (pickerOpen) setPickerOpen(false);
+                else setReply(null);
+              }
             }}
           />
         )}
@@ -435,6 +570,18 @@ export function Thread() {
             </button>
       </form>
       </div>
+      {menu && (
+        <div
+          className="menu msg-menu"
+          style={{ left: menu.left, top: menu.top }}
+          role="menu"
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button type="button" role="menuitem" onClick={() => beginReply(menu.id)}>
+            Ответить
+          </button>
+        </div>
+      )}
       <ChatProfile
         chat={chat}
         messages={items}
