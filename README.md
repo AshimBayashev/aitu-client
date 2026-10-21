@@ -22,8 +22,6 @@ npm install --legacy-peer-deps
 npm run tauri dev
 ```
 
-Vite закреплён на 6-й линейке: более новая версия требует Node.js 20.19 или новее.
-
 Установщик:
 
 ```bash
