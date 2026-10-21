@@ -332,7 +332,7 @@ export function Thread() {
   }
 
   function openMessageMenu(message: Message, x: number, y: number) {
-    if (message.delivery !== "sent") return;
+    if (message.delivery === "sending" || message.delivery === "failed") return;
     const width = 180;
     const height = 48;
     setMenu({
@@ -467,9 +467,10 @@ export function Thread() {
                     {message.outgoing && message.delivery === "sending" && (
                       <span className="status-sending" title="отправляется" />
                     )}
-                    {message.outgoing && message.delivery === "sent" && (
-                      <span className="status-sent" title="отправлено">
+                    {message.outgoing && (message.delivery === "sent" || message.delivery === "read") && (
+                      <span className={message.delivery === "read" ? "ticks read" : "ticks"} title={message.delivery === "read" ? "прочитано" : "доставлено"}>
                         <IconCheck />
+                        {message.delivery === "read" && <IconCheck />}
                       </span>
                     )}
                     {message.outgoing && message.delivery === "failed" && (

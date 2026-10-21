@@ -568,7 +568,16 @@ textarea::placeholder,
   font-size: 0.72rem;
 }
 
-.status-sent { display: inline-flex; color: var(--accent); }
+.ticks {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  color: var(--muted);
+}
+
+.ticks.read { color: var(--accent); }
+.ticks svg + svg { margin-left: -9px; }
+
 .status-failed { color: var(--danger); }
 
 .status-sending {

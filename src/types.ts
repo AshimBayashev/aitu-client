@@ -35,7 +35,7 @@ export type Message = {
   outgoing: boolean;
   text: string;
   sentAt: number;
-  delivery: "sending" | "sent" | "failed";
+  delivery: "sending" | "sent" | "read" | "failed";
   author?: string;
   files?: ChatFile[];
   reply?: MessageReply;

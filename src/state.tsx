@@ -108,7 +108,7 @@ function toMessage(chatId: string, remote: RemoteMessage): Message {
     outgoing: remote.outgoing,
     text: remote.text,
     sentAt: remote.sentAt,
-    delivery: "sent",
+    delivery: remote.status === "read" ? "read" : "sent",
     author: remote.author ?? undefined,
     files: remote.files ?? [],
     reply: remote.reply?.id ? remote.reply : undefined,

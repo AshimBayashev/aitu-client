@@ -37,6 +37,7 @@ export type RemoteMessage = {
   sentAt: number;
   author: string | null;
   files: RemoteFile[];
+  status?: string;
   reply?: { id: string; author: string; text: string } | null;
 };
 

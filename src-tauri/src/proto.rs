@@ -27,6 +27,7 @@ pub struct RemoteMessage {
     pub sent_at: i64,
     pub author: Option<String>,
     pub files: Vec<RemoteFile>,
+    pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reply: Option<RemoteReply>,
 }
@@ -287,6 +288,7 @@ pub fn parse_history(
             sent_at: message.sent_at,
             author,
             files: message.files.clone(),
+            status: message.status.clone(),
             reply: quote_for(&message.reply_to, &index, &names),
         });
     }
@@ -310,6 +312,7 @@ struct ParsedBody {
     files: Vec<RemoteFile>,
     sent_at: i64,
     reply_to: String,
+    status: String,
 }
 
 fn party_user(raw: &[u8]) -> Result<Option<(String, Party)>, String> {
@@ -431,7 +434,7 @@ fn parse_message(raw: &[u8], me: &str, _peer_type: &str) -> Result<Option<Parsed
     let dialog_id = dialog.as_ref().map(|item| text(item, 1)).unwrap_or_default();
     let outgoing = !me.is_empty() && sender_id == me;
     let reply_to = text(&fields, 5);
-    let (text, files) = message_parts(&fields)?;
+    let (text, files, status) = message_parts(&fields)?;
     Ok(Some(ParsedBody {
         id,
         dialog_id,
@@ -441,10 +444,11 @@ fn parse_message(raw: &[u8], me: &str, _peer_type: &str) -> Result<Option<Parsed
         files,
         sent_at: millis(var(&fields, 2).unwrap_or(0)),
         reply_to,
+        status,
     }))
 }
 
-fn message_parts(fields: &[(u32, Val)]) -> Result<(String, Vec<RemoteFile>), String> {
+fn message_parts(fields: &[(u32, Val)]) -> Result<(String, Vec<RemoteFile>, String), String> {
     if let Some(raw) = first_msg(fields, 12)
         .or_else(|| first_msg(fields, 17))
         .or_else(|| first_msg(fields, 22))
@@ -458,19 +462,27 @@ fn message_parts(fields: &[(u32, Val)]) -> Result<(String, Vec<RemoteFile>), Str
         }
         let text = text(&body, 1);
         if !text.is_empty() || !files.is_empty() {
-            return Ok((text, files));
+            return Ok((text, files, receipt_status(&body)));
         }
     }
     if first_msg(fields, 13).is_some() {
-        return Ok(("Служебное сообщение".to_string(), Vec::new()));
+        return Ok(("Служебное сообщение".to_string(), Vec::new(), "sent".to_string()));
     }
     if first_msg(fields, 20).is_some() {
-        return Ok(("Звонок".to_string(), Vec::new()));
+        return Ok(("Звонок".to_string(), Vec::new(), "sent".to_string()));
     }
     if first_msg(fields, 16).is_some() {
-        return Ok(("Вложение".to_string(), Vec::new()));
+        return Ok(("Вложение".to_string(), Vec::new(), "sent".to_string()));
     }
-    Ok((String::new(), Vec::new()))
+    Ok((String::new(), Vec::new(), "sent".to_string()))
+}
+
+fn receipt_status(body: &[(u32, Val)]) -> String {
+    if var(body, 2) == Some(2) {
+        "read".to_string()
+    } else {
+        "sent".to_string()
+    }
 }
 
 fn media_file(raw: &[u8]) -> Result<Option<RemoteFile>, String> {
@@ -916,6 +928,38 @@ mod tests {
         write_msg(&mut wrapped, 2, &dialogs);
         let chats = parse_dialogs(&wrapped).unwrap();
         assert_eq!(chats[0].preview, "Голосовое сообщение");
+    }
+
+    #[test]
+    fn read_receipt_is_separate_from_delivery() {
+        let mut sent = Vec::new();
+        write_str(&mut sent, 1, "ещё нет");
+        write_var(&mut sent, 2, 1);
+        let mut read = Vec::new();
+        write_str(&mut read, 1, "уже видел");
+        write_var(&mut read, 2, 2);
+        let me = encode_peer("me", 0);
+        let peer = encode_peer("u1", 0);
+        let mut first = Vec::new();
+        write_str(&mut first, 1, "m-sent");
+        write_var(&mut first, 2, 1_700_000_000_000);
+        write_msg(&mut first, 3, &me);
+        write_msg(&mut first, 4, &peer);
+        write_msg(&mut first, 12, &sent);
+        let mut second = Vec::new();
+        write_str(&mut second, 1, "m-read");
+        write_var(&mut second, 2, 1_700_000_001_000);
+        write_msg(&mut second, 3, &me);
+        write_msg(&mut second, 4, &peer);
+        write_msg(&mut second, 12, &read);
+        let mut root = Vec::new();
+        write_msg(&mut root, 2, &first);
+        write_msg(&mut root, 2, &second);
+
+        let messages = parse_history(&root, "me", "USER").unwrap();
+        assert_eq!(messages[0].status, "sent");
+        assert_eq!(messages[1].status, "read");
+        assert!(messages[0].outgoing && messages[1].outgoing);
     }
 
     #[test]
