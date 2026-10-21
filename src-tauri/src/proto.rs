@@ -15,6 +15,7 @@ pub struct RemoteChat {
     pub online: bool,
     pub preview: String,
     pub last_at: i64,
+    pub avatar: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -25,6 +26,16 @@ pub struct RemoteMessage {
     pub text: String,
     pub sent_at: i64,
     pub author: Option<String>,
+    pub files: Vec<RemoteFile>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteFile {
+    pub id: String,
+    pub name: String,
+    pub size: i64,
+    pub kind: String,
 }
 
 #[derive(Clone)]
@@ -51,7 +62,13 @@ pub fn encode_query_history(peer_id: &str, peer_type: i32) -> Vec<u8> {
     out
 }
 
-pub fn encode_send(peer_id: &str, peer_type: i32, local_id: &str, text: &str) -> Vec<u8> {
+pub fn encode_send(
+    peer_id: &str,
+    peer_type: i32,
+    local_id: &str,
+    text: &str,
+    files: &[(String, String, i32)],
+) -> Vec<u8> {
     let mut out = Vec::new();
     if peer_type == 2 {
         let mut channel = Vec::new();
@@ -61,7 +78,24 @@ pub fn encode_send(peer_id: &str, peer_type: i32, local_id: &str, text: &str) ->
         write_msg(&mut out, 1, &encode_peer(peer_id, peer_type));
     }
     write_str(&mut out, 2, local_id);
-    write_str(&mut out, 3, text);
+    if !text.is_empty() {
+        write_str(&mut out, 3, text);
+    }
+    for (file_id, name, kind) in files {
+        write_msg(&mut out, 4, &encode_input_media(file_id, name, *kind));
+    }
+    out
+}
+
+fn encode_input_media(file_id: &str, name: &str, kind: i32) -> Vec<u8> {
+    let mut out = Vec::new();
+    write_str(&mut out, 1, file_id);
+    if !name.is_empty() {
+        write_str(&mut out, 2, name);
+    }
+    if kind != 0 {
+        write_var(&mut out, 3, kind as u64);
+    }
     out
 }
 
@@ -119,8 +153,9 @@ pub fn parse_dialogs(bytes: &[u8]) -> Result<Vec<RemoteChat>, String> {
                 .get(&dialog_id)
                 .map(|(time, _)| message.sent_at >= *time)
                 .unwrap_or(true);
-            if better && !dialog_id.is_empty() {
-                previews.insert(dialog_id, (message.sent_at, message.text));
+            let label = preview_label(&message.text, &message.files);
+            if better && !dialog_id.is_empty() && !label.is_empty() {
+                previews.insert(dialog_id, (message.sent_at, label));
             }
         }
     }
@@ -157,6 +192,7 @@ pub fn parse_dialogs(bytes: &[u8]) -> Result<Vec<RemoteChat>, String> {
             online: party.map(|item| item.online).unwrap_or(false),
             preview,
             last_at: if last_at > 0 { last_at } else { preview_at },
+            avatar: party.and_then(|item| item.avatar.clone()),
         });
     }
     chats.sort_by(|a, b| b.last_at.cmp(&a.last_at));
@@ -184,7 +220,7 @@ pub fn parse_history(
     let mut messages = Vec::new();
     for raw in msgs(&root, 2) {
         if let Some(message) = parse_message(raw, me, peer_type)? {
-            if message.text.is_empty() {
+            if message.text.is_empty() && message.files.is_empty() {
                 continue;
             }
             let author = if message.outgoing || !matches!(peer_type, "GROUP" | "DISCUSSION") {
@@ -198,6 +234,7 @@ pub fn parse_history(
                 text: message.text,
                 sent_at: message.sent_at,
                 author,
+                files: message.files,
             });
         }
     }
@@ -209,6 +246,7 @@ struct Party {
     title: String,
     members: Option<i64>,
     online: bool,
+    avatar: Option<String>,
 }
 
 struct ParsedBody {
@@ -217,6 +255,7 @@ struct ParsedBody {
     sender_id: String,
     outgoing: bool,
     text: String,
+    files: Vec<RemoteFile>,
     sent_at: i64,
 }
 
@@ -238,6 +277,7 @@ fn party_user(raw: &[u8]) -> Result<Option<(String, Party)>, String> {
             title,
             members: None,
             online,
+            avatar: avatar_of(&fields, 7),
         },
     )))
 }
@@ -255,6 +295,7 @@ fn party_group(raw: &[u8]) -> Result<Option<(String, Party)>, String> {
             title: text(&fields, 3),
             members: if count > 0 { Some(count) } else { None },
             online: false,
+            avatar: avatar_of(&fields, 6),
         },
     )))
 }
@@ -272,6 +313,7 @@ fn party_channel(raw: &[u8]) -> Result<Option<(String, Party)>, String> {
             title: text(&fields, 3),
             members: if count > 0 { Some(count) } else { None },
             online: false,
+            avatar: avatar_of(&fields, 5),
         },
     )))
 }
@@ -288,6 +330,7 @@ fn party_bot(raw: &[u8]) -> Result<Option<(String, Party)>, String> {
             title: text(&fields, 2),
             members: None,
             online: false,
+            avatar: avatar_of(&fields, 7),
         },
     )))
 }
@@ -304,11 +347,26 @@ fn party_business(raw: &[u8]) -> Result<Option<(String, Party)>, String> {
             title: text(&fields, 4),
             members: None,
             online: false,
+            avatar: avatar_of(&fields, 11),
         },
     )))
 }
 
-fn parse_message(raw: &[u8], me: &str, peer_type: &str) -> Result<Option<ParsedBody>, String> {
+fn avatar_of(fields: &[(u32, Val)], field: u32) -> Option<String> {
+    let raw = first_msg(fields, field)?;
+    let avatar = read_fields(raw).ok()?;
+    for image_field in [2, 1] {
+        let Some(image) = first_msg(&avatar, image_field) else {
+            continue;
+        };
+        if let Ok(Some((id, _, _))) = nested_file(image) {
+            return Some(id);
+        }
+    }
+    None
+}
+
+fn parse_message(raw: &[u8], me: &str, _peer_type: &str) -> Result<Option<ParsedBody>, String> {
     let fields = read_fields(raw)?;
     let id = text(&fields, 1);
     if id.is_empty() {
@@ -319,41 +377,109 @@ fn parse_message(raw: &[u8], me: &str, peer_type: &str) -> Result<Option<ParsedB
     let sender_id = sender.as_ref().map(|item| text(item, 1)).unwrap_or_default();
     let dialog_id = dialog.as_ref().map(|item| text(item, 1)).unwrap_or_default();
     let outgoing = !me.is_empty() && sender_id == me;
-    let text = message_text(&fields, peer_type)?;
+    let (text, files) = message_parts(&fields)?;
     Ok(Some(ParsedBody {
         id,
         dialog_id,
         sender_id,
         outgoing,
         text,
+        files,
         sent_at: millis(var(&fields, 2).unwrap_or(0)),
     }))
 }
 
-fn message_text(fields: &[(u32, Val)], _peer_type: &str) -> Result<String, String> {
+fn message_parts(fields: &[(u32, Val)]) -> Result<(String, Vec<RemoteFile>), String> {
     if let Some(raw) = first_msg(fields, 12)
         .or_else(|| first_msg(fields, 17))
         .or_else(|| first_msg(fields, 22))
     {
         let body = read_fields(raw)?;
-        let text = text(&body, 1);
-        if !text.is_empty() {
-            return Ok(text);
+        let mut files = Vec::new();
+        for raw in msgs(&body, 3).into_iter().chain(msgs(&body, 7)) {
+            if let Some(file) = media_file(raw)? {
+                files.push(file);
+            }
         }
-        if first_msg(&body, 3).is_some() || first_msg(&body, 7).is_some() {
-            return Ok("Вложение".to_string());
+        let text = text(&body, 1);
+        if !text.is_empty() || !files.is_empty() {
+            return Ok((text, files));
         }
     }
     if first_msg(fields, 13).is_some() {
-        return Ok("Служебное сообщение".to_string());
+        return Ok(("Служебное сообщение".to_string(), Vec::new()));
     }
     if first_msg(fields, 20).is_some() {
-        return Ok("Звонок".to_string());
+        return Ok(("Звонок".to_string(), Vec::new()));
     }
     if first_msg(fields, 16).is_some() {
-        return Ok("Вложение".to_string());
+        return Ok(("Вложение".to_string(), Vec::new()));
     }
-    Ok(String::new())
+    Ok((String::new(), Vec::new()))
+}
+
+fn media_file(raw: &[u8]) -> Result<Option<RemoteFile>, String> {
+    let fields = read_fields(raw)?;
+    const KINDS: [(u32, &str); 7] = [
+        (11, "file"),
+        (12, "image"),
+        (13, "video"),
+        (14, "audio"),
+        (16, "sticker"),
+        (17, "music"),
+        (18, "gif"),
+    ];
+    for (field, kind) in KINDS {
+        let Some(part) = first_msg(&fields, field) else {
+            continue;
+        };
+        let Some((id, name, size)) = nested_file(part)? else {
+            continue;
+        };
+        return Ok(Some(RemoteFile {
+            id,
+            name,
+            size,
+            kind: kind.to_string(),
+        }));
+    }
+    Ok(None)
+}
+
+fn nested_file(raw: &[u8]) -> Result<Option<(String, String, i64)>, String> {
+    let fields = read_fields(raw)?;
+    let id = text(&fields, 1);
+    if looks_like_file_id(&id) {
+        return Ok(Some((id, text(&fields, 3), var(&fields, 4).unwrap_or(0) as i64)));
+    }
+    if let Some(inner) = first_msg(&fields, 1) {
+        return nested_file(inner).or(Ok(None));
+    }
+    Ok(None)
+}
+
+fn looks_like_file_id(value: &str) -> bool {
+    let len = value.chars().count();
+    len >= 8
+        && len <= 96
+        && value
+            .chars()
+            .all(|char| char.is_ascii_alphanumeric() || matches!(char, '-' | '_' | '?' | '='))
+}
+
+fn preview_label(text: &str, files: &[RemoteFile]) -> String {
+    if !text.is_empty() {
+        return text.to_string();
+    }
+    match files.first() {
+        Some(file) if file.kind == "image" || file.kind == "gif" => "Фото".to_string(),
+        Some(file) if file.kind == "video" => "Видео".to_string(),
+        Some(file) if file.kind == "audio" || file.kind == "music" => "Аудио".to_string(),
+        Some(file) if file.kind == "sticker" => "Стикер".to_string(),
+        Some(file) if !file.name.is_empty() => file.name.clone(),
+        Some(_) => "Файл".to_string(),
+        None => String::new(),
+    }
 }
 
 fn looks_like_dialogs(fields: &[(u32, Val)]) -> Result<bool, String> {
@@ -593,5 +719,97 @@ mod tests {
         assert_eq!(chats[0].unread, 2);
         assert_eq!(chats[0].peer_type, "USER");
         assert_eq!(chats[0].last_at, 1_700_000_000_000);
+    }
+
+    #[test]
+    fn history_keeps_a_document_without_caption() {
+        let mut file = Vec::new();
+        write_str(&mut file, 1, "11111111-2222-3333-4444-555555555555");
+        write_str(&mut file, 3, "заметка.txt");
+        write_var(&mut file, 4, 120);
+        let mut document = Vec::new();
+        write_msg(&mut document, 1, &file);
+        let mut media = Vec::new();
+        write_msg(&mut media, 11, &document);
+        let mut data = Vec::new();
+        write_msg(&mut data, 3, &media);
+        let peer = encode_peer("u1", 0);
+        let mut message = Vec::new();
+        write_str(&mut message, 1, "m-file");
+        write_var(&mut message, 2, 1_700_000_000_000);
+        write_msg(&mut message, 3, &peer);
+        write_msg(&mut message, 4, &peer);
+        write_msg(&mut message, 12, &data);
+        let mut root = Vec::new();
+        write_msg(&mut root, 2, &message);
+
+        let messages = parse_history(&root, "me", "USER").unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].text, "");
+        assert_eq!(messages[0].files.len(), 1);
+        assert_eq!(messages[0].files[0].name, "заметка.txt");
+        assert_eq!(messages[0].files[0].kind, "file");
+        assert_eq!(messages[0].files[0].size, 120);
+    }
+
+    #[test]
+    fn history_reads_an_image_nested_inside_media() {
+        let mut file = Vec::new();
+        write_str(&mut file, 1, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+        write_str(&mut file, 3, "photo.jpg");
+        write_var(&mut file, 4, 80);
+        let mut image = Vec::new();
+        write_msg(&mut image, 1, &file);
+        write_var(&mut image, 2, 100);
+        write_var(&mut image, 3, 40);
+        let mut media_image = Vec::new();
+        write_msg(&mut media_image, 1, &image);
+        let mut media = Vec::new();
+        write_msg(&mut media, 12, &media_image);
+        let mut data = Vec::new();
+        write_str(&mut data, 1, "смотри");
+        write_msg(&mut data, 3, &media);
+        let peer = encode_peer("u1", 0);
+        let mut message = Vec::new();
+        write_str(&mut message, 1, "m-img");
+        write_var(&mut message, 2, 1_700_000_000_000);
+        write_msg(&mut message, 3, &peer);
+        write_msg(&mut message, 12, &data);
+        let mut root = Vec::new();
+        write_msg(&mut root, 2, &message);
+
+        let messages = parse_history(&root, "u1", "USER").unwrap();
+        assert_eq!(messages[0].text, "смотри");
+        assert!(messages[0].outgoing);
+        assert_eq!(messages[0].files[0].kind, "image");
+        assert_eq!(messages[0].files[0].name, "photo.jpg");
+    }
+
+    #[test]
+    fn dialog_uses_the_small_avatar() {
+        let mut file = Vec::new();
+        write_str(&mut file, 1, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee?thumb");
+        let mut image = Vec::new();
+        write_msg(&mut image, 1, &file);
+        let mut avatar = Vec::new();
+        write_msg(&mut avatar, 2, &image);
+        let mut user = Vec::new();
+        write_str(&mut user, 1, "u1");
+        write_str(&mut user, 2, "Айгерим");
+        write_msg(&mut user, 7, &avatar);
+        let peer = encode_peer("u1", 0);
+        let mut dialog = Vec::new();
+        write_msg(&mut dialog, 1, &peer);
+        let mut dialogs = Vec::new();
+        write_msg(&mut dialogs, 1, &dialog);
+        write_msg(&mut dialogs, 2, &user);
+        let mut root = Vec::new();
+        write_msg(&mut root, 2, &dialogs);
+
+        let chats = parse_dialogs(&root).unwrap();
+        assert_eq!(
+            chats[0].avatar.as_deref(),
+            Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee?thumb")
+        );
     }
 }

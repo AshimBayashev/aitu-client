@@ -10,6 +10,16 @@ export type Chat = {
   peerType?: string;
   preview?: string;
   lastAt?: number;
+  avatar?: string;
+};
+
+export type FileKind = "image" | "video" | "audio" | "file" | "gif" | "music" | "sticker";
+
+export type ChatFile = {
+  id: string;
+  name: string;
+  size: number;
+  kind: FileKind | string;
 };
 
 export type Message = {
@@ -20,6 +30,7 @@ export type Message = {
   sentAt: number;
   delivery: "sending" | "sent" | "failed";
   author?: string;
+  files?: ChatFile[];
 };
 
 export type Folder = {

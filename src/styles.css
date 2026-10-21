@@ -363,9 +363,16 @@ textarea::placeholder,
   border-radius: 14px;
   display: grid;
   place-items: center;
+  overflow: hidden;
   color: #fff;
   font-weight: 700;
   flex: none;
+}
+
+.avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .chat-copy { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
@@ -404,11 +411,19 @@ textarea::placeholder,
 .online { color: var(--accent); }
 
 .local-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   border: 1px solid var(--line);
   color: var(--muted);
   border-radius: 999px;
   padding: 4px 8px;
   font-size: 0.75rem;
+}
+
+.local-pill .avatar {
+  border-radius: 50%;
+  font-size: 0.62rem;
 }
 
 .thread-body { flex: 1; overflow: auto; }
@@ -553,14 +568,86 @@ textarea::placeholder,
 
 .primary:disabled { opacity: 0.65; cursor: default; }
 
+.media-button {
+  display: block;
+  width: min(320px, 100%);
+  margin: 0 0 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  overflow: hidden;
+  background: transparent;
+  cursor: pointer;
+}
+
+.media-button img,
+.media-player {
+  display: block;
+  width: min(320px, 100%);
+  max-height: 360px;
+  border-radius: 12px;
+  object-fit: cover;
+  background: rgb(0 0 0 / 16%);
+}
+
+.file-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: min(260px, 100%);
+  margin: 0 0 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgb(255 255 255 / 6%);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.file-card:disabled { cursor: default; opacity: 0.8; }
+.file-card span { word-break: break-word; }
+.file-card small { color: var(--muted); }
+
 .composer {
   position: relative;
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-end;
   gap: 8px;
   padding: 12px;
   background: var(--list);
   border-top: 1px solid var(--line);
+}
+
+.pending-files {
+  display: flex;
+  flex: 1 0 100%;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pending-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 4px 4px 4px 10px;
+  border-radius: 999px;
+  background: var(--soft);
+  color: var(--text);
+  font-size: 0.82rem;
+}
+
+.pending-file button {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
 }
 
 .composer textarea {

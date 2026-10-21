@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -7,12 +8,17 @@ use base64::Engine;
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State, Url, WebviewUrl, WebviewWindow};
+use tauri_plugin_notification::NotificationExt;
+use tauri_plugin_opener::OpenerExt;
 use tauri::webview::{PageLoadEvent, WebviewWindowBuilder};
 
 use crate::proto::{self, RemoteChat, RemoteMessage};
 
 const API: &str = "https://api.aitu.io";
+const MEDIA_UPLOAD: &str = "https://media-upload.api.aitu.io/api/v1/media/uploadfile";
+const MEDIA_DOWNLOAD: &str = "https://media-cdn.aitu.io/api/v2/media/download/file";
 const LOGIN_WINDOW: &str = "aitu-login";
+const MAX_UPLOAD_BYTES: u64 = 200 * 1024 * 1024;
 
 pub struct AituState {
     cookie: Mutex<String>,
@@ -22,6 +28,7 @@ pub struct AituState {
     http: reqwest::Client,
     login_busy: AtomicBool,
     login_done: AtomicBool,
+    active_chat: Mutex<Option<String>>,
 }
 
 impl AituState {
@@ -41,6 +48,7 @@ impl AituState {
             http,
             login_busy: AtomicBool::new(false),
             login_done: AtomicBool::new(false),
+            active_chat: Mutex::new(None),
         }
     }
 
@@ -99,6 +107,7 @@ pub struct SessionStatus {
     pub logged_in: bool,
     pub name: Option<String>,
     pub user_id: Option<String>,
+    pub avatar: Option<String>,
 }
 
 #[tauri::command]
@@ -109,6 +118,7 @@ pub async fn session_status(app: AppHandle, state: State<'_, AituState>) -> Resu
             logged_in: false,
             name: None,
             user_id: None,
+            avatar: None,
         });
     }
     let installation = state.installation_id.lock().expect("installation").clone();
@@ -121,6 +131,7 @@ pub async fn session_status(app: AppHandle, state: State<'_, AituState>) -> Resu
                 logged_in: true,
                 name: Some(me.name),
                 user_id: Some(me.id),
+                avatar: me.avatar,
             })
         }
         Err(_) => {
@@ -130,6 +141,7 @@ pub async fn session_status(app: AppHandle, state: State<'_, AituState>) -> Resu
                 logged_in: false,
                 name: None,
                 user_id: None,
+                avatar: None,
             })
         }
     }
@@ -191,12 +203,140 @@ pub async fn logout(app: AppHandle, state: State<'_, AituState>) -> Result<(), S
     *state.cookie.lock().expect("cookie") = String::new();
     *state.user_id.lock().expect("user") = String::new();
     *state.name.lock().expect("name") = String::new();
+    *state.active_chat.lock().expect("active") = None;
     state.login_busy.store(false, Ordering::SeqCst);
     state.save(&app)?;
     if let Some(window) = app.get_webview_window(LOGIN_WINDOW) {
         let _ = window.close();
     }
     Ok(())
+}
+
+#[tauri::command]
+pub fn set_active_chat(state: State<'_, AituState>, chat_id: Option<String>) {
+    *state.active_chat.lock().expect("active") = chat_id.filter(|id| !id.is_empty());
+}
+
+pub fn start_message_watch(app: AppHandle) {
+    std::thread::spawn(move || {
+        let mut known: Option<HashMap<String, i64>> = None;
+        loop {
+            match tauri::async_runtime::block_on(poll_dialogs(&app)) {
+                Poll::SignedOut => known = None,
+                Poll::Unavailable => {}
+                Poll::Ready(snapshot) => {
+                    if let Some(before) = known.as_ref() {
+                        notify_incoming(&app, before, &snapshot.chats);
+                    }
+                    known = Some(snapshot.unread);
+                }
+            }
+            std::thread::sleep(Duration::from_secs(12));
+        }
+    });
+}
+
+enum Poll {
+    SignedOut,
+    Unavailable,
+    Ready(DialogSnapshot),
+}
+
+struct DialogSnapshot {
+    chats: Vec<RemoteChat>,
+    unread: HashMap<String, i64>,
+}
+
+async fn poll_dialogs(app: &AppHandle) -> Poll {
+    let state = app.state::<AituState>();
+    let cookie = state.cookie.lock().expect("cookie").clone();
+    if cookie.is_empty() {
+        return Poll::SignedOut;
+    }
+    let installation = state.installation_id.lock().expect("installation").clone();
+    let http = state.http.clone();
+    drop(state);
+    let Ok(bytes) = grpc(
+        &http,
+        &cookie,
+        &installation,
+        "/kz.btsd.messenger.dialogs.DialogService/GetDialogs",
+        proto::encode_query_dialogs(),
+    )
+    .await
+    else {
+        return Poll::Unavailable;
+    };
+    let Ok(chats) = proto::parse_dialogs(&bytes) else {
+        return Poll::Unavailable;
+    };
+    if chats.is_empty() && bytes.len() > 200 {
+        return Poll::Unavailable;
+    }
+    let unread = chats.iter().map(|chat| (chat.id.clone(), chat.unread)).collect();
+    Poll::Ready(DialogSnapshot { chats, unread })
+}
+
+fn notify_incoming(app: &AppHandle, previous: &HashMap<String, i64>, chats: &[RemoteChat]) {
+    let state = app.state::<AituState>();
+    let active = state.active_chat.lock().expect("active").clone();
+    drop(state);
+    let window = app.get_webview_window("main");
+    let visible = window.as_ref().and_then(|item| item.is_visible().ok()).unwrap_or(false);
+    let focused = window.as_ref().and_then(|item| item.is_focused().ok()).unwrap_or(false);
+    for alert in incoming_alerts(previous, chats, active.as_deref(), visible && focused) {
+        let _ = app
+            .notification()
+            .builder()
+            .title(alert.title)
+            .body(alert.body)
+            .extra("chatId", alert.id)
+            .show();
+    }
+}
+
+struct Alert {
+    id: String,
+    title: String,
+    body: String,
+}
+
+fn incoming_alerts(
+    previous: &HashMap<String, i64>,
+    chats: &[RemoteChat],
+    active: Option<&str>,
+    focused: bool,
+) -> Vec<Alert> {
+    let mut alerts = Vec::new();
+    for chat in chats {
+        let before = previous.get(&chat.id).copied().unwrap_or(0);
+        if chat.unread <= before || chat.unread <= 0 {
+            continue;
+        }
+        if focused && active == Some(chat.id.as_str()) {
+            continue;
+        }
+        let title = if chat.title.trim().is_empty() {
+            "Aitu".to_string()
+        } else {
+            chat.title.clone()
+        };
+        alerts.push(Alert {
+            id: chat.id.clone(),
+            title,
+            body: preview_text(&chat.preview),
+        });
+    }
+    alerts
+}
+
+fn preview_text(preview: &str) -> String {
+    let trimmed = preview.trim();
+    if trimmed.is_empty() {
+        "Новое сообщение".to_string()
+    } else {
+        trimmed.chars().take(140).collect()
+    }
 }
 
 #[tauri::command]
@@ -249,10 +389,20 @@ pub async fn send_message(
     peer_type: String,
     local_id: String,
     text: String,
+    paths: Vec<String>,
 ) -> Result<(), String> {
+    let caption = text.trim().to_string();
+    if caption.is_empty() && paths.is_empty() {
+        return Err("Нечего отправлять".to_string());
+    }
     let cookie = require_cookie(&state)?;
     let installation = state.installation_id.lock().expect("installation").clone();
     let code = proto::peer_code(&peer_type)?;
+    let mut files = Vec::new();
+    for path in &paths {
+        let uploaded = upload_file(&state.http, &cookie, &installation, path).await?;
+        files.push(uploaded);
+    }
     let method = if peer_type == "CHANNEL" {
         "SendChannelMessage"
     } else {
@@ -263,10 +413,45 @@ pub async fn send_message(
         &cookie,
         &installation,
         &format!("/kz.btsd.messenger.messages.MessageService/{method}"),
-        proto::encode_send(&peer_id, code, &local_id, &text),
+        proto::encode_send(&peer_id, code, &local_id, &caption, &files),
     )
     .await?;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn open_attachment(app: AppHandle, file_id: String, name: String) -> Result<(), String> {
+    let id = safe_id(&file_id)?;
+    let file_name = safe_name(&name);
+    let dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|err| err.to_string())?
+        .join("media")
+        .join(&id);
+    std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+    let path = dir.join(&file_name);
+    if !path.is_file() {
+        let response = reqwest::Client::builder()
+            .timeout(Duration::from_secs(120))
+            .http1_only()
+            .no_proxy()
+            .user_agent("AituDesktop/0.1")
+            .build()
+            .map_err(|err| err.to_string())?
+            .get(format!("{MEDIA_DOWNLOAD}/{id}"))
+            .send()
+            .await
+            .map_err(|_| "Не удалось скачать файл".to_string())?;
+        if !response.status().is_success() {
+            return Err("Не удалось скачать файл".to_string());
+        }
+        let bytes = response.bytes().await.map_err(|_| "Не удалось скачать файл".to_string())?;
+        std::fs::write(&path, &bytes).map_err(|err| err.to_string())?;
+    }
+    app.opener()
+        .open_path(path.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|_| "Не удалось открыть файл".to_string())
 }
 
 #[tauri::command]
@@ -305,6 +490,7 @@ fn require_cookie(state: &AituState) -> Result<String, String> {
 struct Me {
     id: String,
     name: String,
+    avatar: Option<String>,
 }
 
 fn finish_login(app: AppHandle, window: WebviewWindow) {
@@ -341,7 +527,7 @@ fn finish_login(app: AppHandle, window: WebviewWindow) {
         Ok(me) => {
             let _ = app.emit(
                 "aitu-session",
-                json!({ "loggedIn": true, "name": me.name, "userId": me.id }),
+                json!({ "loggedIn": true, "name": me.name, "userId": me.id, "avatar": me.avatar }),
             );
             app.state::<AituState>().login_done.store(true, Ordering::SeqCst);
             let _ = window.close();
@@ -451,7 +637,30 @@ fn parse_me(text: &str) -> Result<Me, String> {
     Ok(Me {
         id,
         name: if name.is_empty() { username } else { name },
+        avatar: avatar_from_profile(&user),
     })
+}
+
+fn avatar_from_profile(user: &Value) -> Option<String> {
+    let avatar = user.get("avatar")?;
+    for key in ["small", "full"] {
+        let id = avatar
+            .get(key)
+            .and_then(|image| image.get("file"))
+            .and_then(|file| file.get("file_id").or_else(|| file.get("fileId")))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| {
+                (8..=96).contains(&id.len())
+                    && id.chars().all(|char| {
+                        char.is_ascii_alphanumeric() || matches!(char, '-' | '_' | '?' | '=')
+                    })
+            });
+        if id.is_some() {
+            return id.map(str::to_string);
+        }
+    }
+    None
 }
 
 async fn grpc(
@@ -579,9 +788,135 @@ fn decode_base64_chunk(chunk: &str) -> Result<Vec<u8>, String> {
         .map_err(|_| "Неполный ответ Aitu".to_string())
 }
 
+async fn upload_file(
+    client: &reqwest::Client,
+    cookie: &str,
+    installation: &str,
+    path: &str,
+) -> Result<(String, String, i32), String> {
+    let file_path = std::path::PathBuf::from(path);
+    let name = file_path
+        .file_name()
+        .and_then(|item| item.to_str())
+        .filter(|item| !item.is_empty())
+        .unwrap_or("file")
+        .to_string();
+    let kind = input_kind(&name);
+    let mime = guess_mime(&name);
+    let owned = file_path.clone();
+    let bytes = tauri::async_runtime::spawn_blocking(move || std::fs::read(owned))
+        .await
+        .map_err(|_| "Не удалось прочитать файл".to_string())?
+        .map_err(|_| "Не удалось прочитать файл".to_string())?;
+    if bytes.len() as u64 > MAX_UPLOAD_BYTES {
+        return Err("Файл больше 200 МБ".to_string());
+    }
+    let part = reqwest::multipart::Part::bytes(bytes)
+        .file_name(name.clone())
+        .mime_str(mime)
+        .map_err(|_| "Не удалось подготовить файл".to_string())?;
+    let response = client
+        .post(MEDIA_UPLOAD)
+        .timeout(Duration::from_secs(180))
+        .headers(headers(cookie, installation)?)
+        .multipart(reqwest::multipart::Form::new().part("file", part))
+        .send()
+        .await
+        .map_err(|_| "Не удалось загрузить файл".to_string())?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(explain(status, &body));
+    }
+    let value: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+    let file_id = find_file_id(&value).ok_or_else(|| "Aitu не принял файл".to_string())?;
+    Ok((file_id, name, kind))
+}
+
+fn find_file_id(value: &Value) -> Option<String> {
+    let direct = value
+        .get("fileId")
+        .or_else(|| value.get("file_id"))
+        .and_then(Value::as_str)
+        .filter(|item| !item.is_empty());
+    if let Some(id) = direct {
+        return Some(id.to_string());
+    }
+    let nested = value.as_object()?.values().find_map(find_file_id);
+    nested
+}
+
+fn input_kind(name: &str) -> i32 {
+    match extension(name).as_str() {
+        "gif" => 6,
+        "jpg" | "jpeg" | "png" | "webp" | "bmp" | "heic" => 1,
+        "mp4" | "webm" | "mov" | "mkv" => 2,
+        "mp3" | "wav" | "ogg" | "m4a" | "aac" => 3,
+        _ => 0,
+    }
+}
+
+fn guess_mime(name: &str) -> &'static str {
+    match extension(name).as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "heic" => "image/heic",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        "mkv" => "video/x-matroska",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "ogg" => "audio/ogg",
+        "m4a" | "aac" => "audio/mp4",
+        "pdf" => "application/pdf",
+        "txt" => "text/plain",
+        _ => "application/octet-stream",
+    }
+}
+
+fn extension(name: &str) -> String {
+    name.rsplit_once('.')
+        .map(|(_, ext)| ext.trim().to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
+fn safe_id(id: &str) -> Result<String, String> {
+    if (8..=80).contains(&id.len())
+        && id
+            .chars()
+            .all(|char| char.is_ascii_alphanumeric() || char == '-' || char == '_')
+    {
+        Ok(id.to_string())
+    } else {
+        Err("Некорректный файл".to_string())
+    }
+}
+
+fn safe_name(name: &str) -> String {
+    let base = std::path::Path::new(name)
+        .file_name()
+        .and_then(|item| item.to_str())
+        .unwrap_or("file");
+    let cleaned: String = base
+        .chars()
+        .map(|char| if char.is_control() || char == '/' || char == '\\' { '_' } else { char })
+        .collect();
+    if cleaned.is_empty() || cleaned == "." || cleaned == ".." {
+        "file".to_string()
+    } else {
+        cleaned
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{decode_grpc_web_text, split_frames};
+    use super::{decode_grpc_web_text, incoming_alerts, split_frames};
+    use crate::proto::RemoteChat;
+    use std::collections::HashMap;
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
 
@@ -593,6 +928,34 @@ mod tests {
         let (payload, trailers) = split_frames(&raw).unwrap();
         assert!(payload.is_empty());
         assert_eq!(trailers, "abcde");
+    }
+
+    fn chat(id: &str, unread: i64, title: &str) -> RemoteChat {
+        RemoteChat {
+            id: id.to_string(),
+            title: title.to_string(),
+            kind: "direct".to_string(),
+            peer_type: "USER".to_string(),
+            unread,
+            members: None,
+            online: false,
+            preview: "preview".to_string(),
+            last_at: 1,
+            avatar: None,
+        }
+    }
+
+    #[test]
+    fn alerts_skip_the_open_chat_and_the_first_snapshot_baseline() {
+        let mut previous = HashMap::new();
+        previous.insert("open".to_string(), 1);
+        previous.insert("other".to_string(), 0);
+        let chats = vec![chat("open", 3, "Open"), chat("other", 2, "Other"), chat("quiet", 0, "Quiet")];
+        let focused = incoming_alerts(&previous, &chats, Some("open"), true);
+        assert_eq!(focused.len(), 1);
+        assert_eq!(focused[0].id, "other");
+        let hidden = incoming_alerts(&previous, &chats, Some("open"), false);
+        assert_eq!(hidden.len(), 2);
     }
 }
 

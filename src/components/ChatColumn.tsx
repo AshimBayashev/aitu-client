@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { avatarColor, formatStamp, initials } from "../data";
+import { formatStamp } from "../data";
+import { Avatar } from "./Avatar";
 import { useApp } from "../state";
 import type { Chat } from "../types";
 import { IconSearch } from "./icons";
@@ -200,9 +201,7 @@ function ChatRow({
   return (
     <div className={selected ? "chat-row selected" : "chat-row"}>
       <button type="button" className="chat-open" onClick={onOpen}>
-        <span className="avatar" style={{ background: avatarColor(chat.title) }}>
-          {initials(chat.title)}
-        </span>
+        <Avatar title={chat.title} fileId={chat.avatar} />
         <span className="chat-copy">
           <span className="chat-title">
             <span>{chat.title}</span>

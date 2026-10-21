@@ -17,7 +17,9 @@ import {
   markRead,
   onLoginClosed,
   onLoginError,
+  onOpenChat,
   onSession,
+  setActiveChat,
   sendRemote,
   sessionStatus,
   type RemoteChat,
@@ -42,6 +44,7 @@ type AppModel = {
   folderDraft: FolderDraft | null;
   connection: Connection;
   accountName: string | null;
+  accountAvatar: string | null;
   loginError: string | null;
   listError: string | null;
   historyError: string | null;
@@ -51,7 +54,7 @@ type AppModel = {
   resetLocal: () => void;
   setActiveFolder: (folderId: string) => void;
   selectChat: (chatId: string) => void;
-  sendMessage: (chatId: string, text: string) => void;
+  sendMessage: (chatId: string, text: string, paths?: string[]) => void;
   rememberEmoji: (char: string) => void;
   setSettingsOpen: (open: boolean) => void;
   openCreateFolder: () => void;
@@ -80,6 +83,7 @@ function toChat(remote: RemoteChat): Chat {
     peerType: remote.peerType,
     preview: remote.preview,
     lastAt: remote.lastAt,
+    avatar: remote.avatar ?? undefined,
   };
 }
 
@@ -92,6 +96,7 @@ function toMessage(chatId: string, remote: RemoteMessage): Message {
     sentAt: remote.sentAt,
     delivery: "sent",
     author: remote.author ?? undefined,
+    files: remote.files ?? [],
   };
 }
 
@@ -127,12 +132,20 @@ function reconcileFolders(current: Folder[], chats: Chat[]): Folder[] {
   ];
 }
 
+function fileKey(message: Message): string {
+  return (message.files ?? []).map((file) => file.name).join("\0");
+}
+
 function mergeMessages(existing: Message[] | undefined, incoming: Message[]): Message[] {
   const pending = (existing ?? []).filter((item) => item.delivery === "sending" || item.delivery === "failed");
   const pendingLeft = pending.filter(
     (item) =>
       !incoming.some(
-        (server) => server.outgoing && server.text === item.text && Math.abs(server.sentAt - item.sentAt) < 120_000,
+        (server) =>
+          server.outgoing &&
+          server.text === item.text &&
+          fileKey(server) === fileKey(item) &&
+          Math.abs(server.sentAt - item.sentAt) < 120_000,
       ),
   );
   return [...incoming, ...pendingLeft].sort((a, b) => a.sentAt - b.sentAt || a.id.localeCompare(b.id));
@@ -153,6 +166,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [folderDraft, setFolderDraft] = useState<FolderDraft | null>(null);
   const [connection, setConnection] = useState<Connection>(desktop ? "checking" : "demo");
   const [accountName, setAccountName] = useState<string | null>(null);
+  const [accountAvatar, setAccountAvatar] = useState<string | null>(null);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -194,9 +208,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (stop) return;
         if (status.loggedIn) {
           setAccountName(status.name);
+          setAccountAvatar(status.avatar);
           setConnection("live");
-          const remote = await listDialogs();
-          if (!stop) applyRef.current(remote);
+          try {
+            const remote = await listDialogs();
+            if (!stop) applyRef.current(remote);
+          } catch (error) {
+            if (!stop) setListError(explain(error));
+          }
         } else {
           setConnection("signed-out");
           setChats([]);
@@ -212,6 +231,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       unlisten.push(
         await onSession((status) => {
           setAccountName(status.name);
+          setAccountAvatar(status.avatar);
           setLoginError(null);
           setConnection("live");
           void listDialogs()
@@ -240,6 +260,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => {
       stop = true;
       unlisten.forEach((stopListening) => stopListening());
+    };
+  }, [desktop]);
+
+  useEffect(() => {
+    if (!desktop) return;
+    void setActiveChat(connection === "live" ? activeChatId : null);
+  }, [desktop, connection, activeChatId]);
+
+  useEffect(() => {
+    if (!desktop) return;
+    let stop = false;
+    let unlisten: (() => void) | undefined;
+    void onOpenChat((chatId) => setActiveChatId(chatId)).then((fn) => {
+      if (stop) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      stop = true;
+      unlisten?.();
     };
   }, [desktop]);
 
@@ -300,6 +339,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       folderDraft,
       connection,
       accountName,
+      accountAvatar,
       loginError,
       listError,
       historyError,
@@ -333,9 +373,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setActiveChatId(chatId);
         setUnread((current) => ({ ...current, [chatId]: 0 }));
       },
-      sendMessage: (chatId, text) => {
+      sendMessage: (chatId, text, paths = []) => {
         const trimmed = text.trim();
-        if (!trimmed) return;
+        if (!trimmed && paths.length === 0) return;
         const id = crypto.randomUUID();
         const pending: Message = {
           id,
@@ -344,6 +384,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
           text: trimmed,
           sentAt: Date.now(),
           delivery: "sending",
+          files: paths.map((path) => ({
+            id: "",
+            name: path.split(/[/\\]/).pop() || "Файл",
+            size: 0,
+            kind: "file",
+          })),
         };
         setMessages((current) => ({
           ...current,
@@ -361,14 +407,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
           }, 280);
           return;
         }
-        void sendRemote(chatId, chat.peerType, id, trimmed)
-          .then(() => {
-            setMessages((current) => ({
-              ...current,
-              [chatId]: (current[chatId] ?? []).map((item) =>
-                item.id === id ? { ...item, delivery: "sent" } : item,
-              ),
-            }));
+        const peerType = chat.peerType;
+        void sendRemote(chatId, peerType, id, trimmed, paths)
+          .then(async () => {
+            try {
+              const incoming = (await listHistory(chatId, peerType)).map((item) => toMessage(chatId, item));
+              setMessages((current) => ({ ...current, [chatId]: mergeMessages(current[chatId], incoming) }));
+            } catch {
+              setMessages((current) => ({
+                ...current,
+                [chatId]: (current[chatId] ?? []).map((item) =>
+                  item.id === id ? { ...item, delivery: "sent" } : item,
+                ),
+              }));
+            }
           })
           .catch(() => {
             setMessages((current) => ({
@@ -445,6 +497,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         void logoutRemote().catch(() => undefined);
         setConnection("signed-out");
         setAccountName(null);
+        setAccountAvatar(null);
         setChats([]);
         setMessages({});
         setUnread({});
@@ -469,6 +522,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       folderDraft,
       connection,
       accountName,
+      accountAvatar,
       loginError,
       listError,
       historyError,

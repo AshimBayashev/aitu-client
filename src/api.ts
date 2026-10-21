@@ -7,6 +7,7 @@ export type SessionStatus = {
   loggedIn: boolean;
   name: string | null;
   userId: string | null;
+  avatar: string | null;
 };
 
 export type RemoteChat = {
@@ -19,6 +20,14 @@ export type RemoteChat = {
   online: boolean;
   preview: string;
   lastAt: number;
+  avatar: string | null;
+};
+
+export type RemoteFile = {
+  id: string;
+  name: string;
+  size: number;
+  kind: string;
 };
 
 export type RemoteMessage = {
@@ -27,7 +36,23 @@ export type RemoteMessage = {
   text: string;
   sentAt: number;
   author: string | null;
+  files: RemoteFile[];
 };
+
+export function mediaSrc(fileId: string): string {
+  return mediaUrl("file", fileId);
+}
+
+export function avatarSrc(fileId: string): string {
+  return mediaUrl("avatar", fileId);
+}
+
+function mediaUrl(kind: "file" | "avatar", fileId: string): string {
+  const split = fileId.indexOf("?");
+  const path = split === -1 ? fileId : fileId.slice(0, split);
+  const query = split === -1 ? "" : fileId.slice(split);
+  return `https://media-cdn.aitu.io/api/v2/media/download/${kind}/${encodeURIComponent(path)}${query}`;
+}
 
 export function sessionStatus(): Promise<SessionStatus> {
   return invoke<SessionStatus>("session_status");
@@ -49,12 +74,26 @@ export function listHistory(peerId: string, peerType: string): Promise<RemoteMes
   return invoke<RemoteMessage[]>("list_history", { peerId, peerType });
 }
 
-export function sendRemote(peerId: string, peerType: string, localId: string, text: string): Promise<void> {
-  return invoke<void>("send_message", { peerId, peerType, localId, text });
+export function sendRemote(
+  peerId: string,
+  peerType: string,
+  localId: string,
+  text: string,
+  paths: string[],
+): Promise<void> {
+  return invoke<void>("send_message", { peerId, peerType, localId, text, paths });
+}
+
+export function openAttachment(fileId: string, name: string): Promise<void> {
+  return invoke<void>("open_attachment", { fileId, name });
 }
 
 export function markRead(peerId: string, peerType: string, messageIds: string[]): Promise<void> {
   return invoke<void>("mark_read", { peerId, peerType, messageIds });
+}
+
+export function setActiveChat(chatId: string | null): Promise<void> {
+  return invoke<void>("set_active_chat", { chatId });
 }
 
 export function onSession(handler: (status: SessionStatus) => void): Promise<UnlistenFn> {
@@ -67,6 +106,13 @@ export function onLoginError(handler: (message: string) => void): Promise<Unlist
 
 export function onLoginClosed(handler: () => void): Promise<UnlistenFn> {
   return listen("aitu-login-closed", () => handler());
+}
+
+export function onOpenChat(handler: (chatId: string) => void): Promise<UnlistenFn> {
+  return listen<{ chatId?: string }>("aitu-open-chat", (event) => {
+    const chatId = event.payload.chatId;
+    if (chatId) handler(chatId);
+  });
 }
 
 export function explain(error: unknown): string {

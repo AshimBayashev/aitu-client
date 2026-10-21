@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { avatarColor, chatSubtitle, formatStamp, initials } from "../data";
+import { open } from "@tauri-apps/plugin-dialog";
+import { explain, inDesktop, mediaSrc, openAttachment } from "../api";
+import { chatSubtitle, formatStamp } from "../data";
+import { Avatar } from "./Avatar";
 import { useApp } from "../state";
+import type { ChatFile } from "../types";
 import { EmojiPicker } from "./EmojiPicker";
-import { IconCheck, IconSend, IconSmile } from "./icons";
+import { IconCheck, IconClip, IconSend, IconSmile } from "./icons";
 
 export function Thread() {
   const {
@@ -13,6 +17,7 @@ export function Thread() {
     sendMessage,
     connection,
     accountName,
+    accountAvatar,
     loginError,
     login,
     historyReady,
@@ -21,12 +26,14 @@ export function Thread() {
   const chat = chats.find((item) => item.id === activeChatId) ?? null;
   const items = chat ? (messages[chat.id] ?? []) : [];
   const [draft, setDraft] = useState("");
+  const [files, setFiles] = useState<string[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setDraft("");
+    setFiles([]);
     setPickerOpen(false);
   }, [activeChatId]);
 
@@ -55,12 +62,20 @@ export function Thread() {
     });
   }
 
+  async function attach() {
+    const picked = await open({ multiple: true, title: "Файлы" });
+    if (!picked) return;
+    const paths = Array.isArray(picked) ? picked : [picked];
+    setFiles((current) => [...current, ...paths.filter((path) => !current.includes(path))]);
+  }
+
   function submit() {
     if (!chat) return;
     const text = draft;
-    if (!text.trim()) return;
-    sendMessage(chat.id, text);
+    if (!text.trim() && files.length === 0) return;
+    sendMessage(chat.id, text, files);
     setDraft("");
+    setFiles([]);
     setPickerOpen(false);
   }
 
@@ -96,9 +111,7 @@ export function Thread() {
   return (
     <section className="thread">
       <header className="thread-head">
-        <span className="avatar" style={{ background: avatarColor(chat.title) }}>
-          {initials(chat.title)}
-        </span>
+        <Avatar title={chat.title} fileId={chat.avatar} />
         <div className="who">
           <h2>{chat.title}</h2>
           <p className={subtitle.online ? "online" : undefined}>{subtitle.text}</p>
@@ -107,6 +120,9 @@ export function Thread() {
           className="local-pill"
           title={connection === "live" ? "Сообщения уходят в Aitu" : "Сообщения остаются на этом компьютере"}
         >
+          {connection === "live" && accountName && (
+            <Avatar title={accountName} fileId={accountAvatar} size={22} />
+          )}
           {connection === "live" ? accountName || "Aitu" : "Локально"}
         </span>
       </header>
@@ -132,7 +148,10 @@ export function Thread() {
               >
                 <div className="bubble">
                   {message.author && !grouped && <span className="author">{message.author}</span>}
-                  <p>{message.text}</p>
+                  {(message.files ?? []).map((file) => (
+                    <Attachment key={`${file.id}:${file.name}`} file={file} />
+                  ))}
+                  {message.text && <p>{message.text}</p>}
                   <span className="bubble-meta">
                     <time>{formatStamp(message.sentAt)}</time>
                     {message.outgoing && message.delivery === "sending" && (
@@ -161,13 +180,30 @@ export function Thread() {
           submit();
         }}
       >
+        {files.length > 0 && (
+          <div className="pending-files">
+            {files.map((path) => (
+              <span key={path} className="pending-file">
+                {path.split(/[/\\]/).pop()}
+                <button type="button" aria-label="Убрать файл" onClick={() => setFiles((current) => current.filter((item) => item !== path))}>
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         {pickerOpen && <EmojiPicker onPick={insertEmoji} />}
+        {inDesktop && (
+          <button type="button" className="icon-button" aria-label="Прикрепить файл" onClick={() => void attach().catch((error) => window.alert(explain(error)))}>
+            <IconClip />
+          </button>
+        )}
         <button
           type="button"
           className={pickerOpen ? "icon-button active" : "icon-button"}
           aria-label="Смайлики"
           aria-expanded={pickerOpen}
-          onClick={() => setPickerOpen((open) => !open)}
+          onClick={() => setPickerOpen((opened) => !opened)}
         >
           <IconSmile />
         </button>
@@ -186,10 +222,48 @@ export function Thread() {
             if (event.key === "Escape") setPickerOpen(false);
           }}
         />
-        <button type="submit" className="send" aria-label="Отправить" disabled={!draft.trim()}>
+        <button type="submit" className="send" aria-label="Отправить" disabled={!draft.trim() && files.length === 0}>
           <IconSend />
         </button>
       </form>
     </section>
   );
+}
+
+function Attachment({ file }: { file: ChatFile }) {
+  const [broken, setBroken] = useState(false);
+  const visual = file.id && !broken && (file.kind === "image" || file.kind === "gif");
+  const playable = file.id && !broken && (file.kind === "video" || file.kind === "audio" || file.kind === "music");
+  const src = file.id ? mediaSrc(file.id) : "";
+
+  function openFile() {
+    if (!file.id) return;
+    void openAttachment(file.id, file.name || "file").catch((error) => window.alert(explain(error)));
+  }
+
+  if (visual) {
+    return (
+      <button type="button" className="media-button" onClick={openFile}>
+        <img src={src} alt={file.name || "Фото"} onError={() => setBroken(true)} />
+      </button>
+    );
+  }
+  if (playable && file.kind === "video") {
+    return <video className="media-player" src={src} controls onError={() => setBroken(true)} />;
+  }
+  if (playable) {
+    return <audio className="media-player" src={src} controls onError={() => setBroken(true)} />;
+  }
+  return (
+    <button type="button" className="file-card" onClick={openFile} disabled={!file.id}>
+      <span>{file.name || "Файл"}</span>
+      {file.size > 0 && <small>{formatBytes(file.size)}</small>}
+    </button>
+  );
+}
+
+function formatBytes(size: number): string {
+  if (size < 1024) return `${size} Б`;
+  if (size < 1024 * 1024) return `${Math.max(1, Math.round(size / 1024))} КБ`;
+  return `${(size / (1024 * 1024)).toFixed(size >= 10 * 1024 * 1024 ? 0 : 1)} МБ`;
 }
