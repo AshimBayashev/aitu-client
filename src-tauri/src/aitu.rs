@@ -420,6 +420,71 @@ pub async fn send_message(
 }
 
 #[tauri::command]
+pub async fn send_voice(
+    state: State<'_, AituState>,
+    peer_id: String,
+    peer_type: String,
+    local_id: String,
+    data: String,
+    mime: String,
+) -> Result<(), String> {
+    let (name, content_type) = voice_file(&mime)?;
+    let bytes = STANDARD
+        .decode(data.trim())
+        .map_err(|_| "Не удалось прочитать запись".to_string())?;
+    if bytes.is_empty() {
+        return Err("Пустая запись".to_string());
+    }
+    if bytes.len() as u64 > 16 * 1024 * 1024 {
+        return Err("Запись слишком длинная".to_string());
+    }
+    let cookie = require_cookie(&state)?;
+    let installation = state.installation_id.lock().expect("installation").clone();
+    let code = proto::peer_code(&peer_type)?;
+    let uploaded = upload_bytes(
+        &state.http,
+        &cookie,
+        &installation,
+        name,
+        content_type,
+        bytes,
+        3,
+    )
+    .await?;
+    let method = if peer_type == "CHANNEL" {
+        "SendChannelMessage"
+    } else {
+        "SendMessage"
+    };
+    grpc(
+        &state.http,
+        &cookie,
+        &installation,
+        &format!("/kz.btsd.messenger.messages.MessageService/{method}"),
+        proto::encode_send(&peer_id, code, &local_id, "", &[uploaded]),
+    )
+    .await?;
+    Ok(())
+}
+
+fn voice_file(mime: &str) -> Result<(&'static str, &'static str), String> {
+    let base = mime
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    match base.as_str() {
+        "audio/wav" | "audio/x-wav" | "audio/wave" => Ok(("voice.wav", "audio/wav")),
+        "audio/webm" => Ok(("voice.webm", "audio/webm")),
+        "audio/ogg" => Ok(("voice.ogg", "audio/ogg")),
+        "audio/mp4" | "audio/m4a" | "audio/aac" => Ok(("voice.m4a", "audio/mp4")),
+        "audio/mpeg" => Ok(("voice.mp3", "audio/mpeg")),
+        _ => Err("Неподдерживаемая запись".to_string()),
+    }
+}
+
+#[tauri::command]
 pub async fn open_attachment(app: AppHandle, file_id: String, name: String) -> Result<(), String> {
     let id = safe_id(&file_id)?;
     let file_name = safe_name(&name);
@@ -808,11 +873,26 @@ async fn upload_file(
         .await
         .map_err(|_| "Не удалось прочитать файл".to_string())?
         .map_err(|_| "Не удалось прочитать файл".to_string())?;
+    upload_bytes(client, cookie, installation, &name, mime, bytes, kind).await
+}
+
+async fn upload_bytes(
+    client: &reqwest::Client,
+    cookie: &str,
+    installation: &str,
+    name: &str,
+    mime: &str,
+    bytes: Vec<u8>,
+    kind: i32,
+) -> Result<(String, String, i32), String> {
+    if bytes.is_empty() {
+        return Err("Пустой файл".to_string());
+    }
     if bytes.len() as u64 > MAX_UPLOAD_BYTES {
         return Err("Файл больше 200 МБ".to_string());
     }
     let part = reqwest::multipart::Part::bytes(bytes)
-        .file_name(name.clone())
+        .file_name(name.to_string())
         .mime_str(mime)
         .map_err(|_| "Не удалось подготовить файл".to_string())?;
     let response = client
@@ -830,7 +910,7 @@ async fn upload_file(
     }
     let value: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
     let file_id = find_file_id(&value).ok_or_else(|| "Aitu не принял файл".to_string())?;
-    Ok((file_id, name, kind))
+    Ok((file_id, name.to_string(), kind))
 }
 
 fn find_file_id(value: &Value) -> Option<String> {

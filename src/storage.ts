@@ -93,5 +93,26 @@ export function loadState(): Persisted {
 }
 
 export function saveState(state: Persisted) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  localStorage.setItem(
+    STORAGE_KEY,
+    JSON.stringify({ ...state, messages: withoutLocalMedia(state.messages) }),
+  );
+}
+
+function withoutLocalMedia(messages: Record<string, Message[]>): Record<string, Message[]> {
+  const next: Record<string, Message[]> = {};
+  for (const [chatId, items] of Object.entries(messages)) {
+    next[chatId] = items.map((item) => {
+      if (!item.files?.some((file) => file.localUrl)) return item;
+      return {
+        ...item,
+        files: item.files.map((file) => {
+          if (!file.localUrl) return file;
+          const { localUrl: _localUrl, ...rest } = file;
+          return rest;
+        }),
+      };
+    });
+  }
+  return next;
 }

@@ -37,6 +37,7 @@ export type RemoteMessage = {
   sentAt: number;
   author: string | null;
   files: RemoteFile[];
+  reply?: { id: string; author: string; text: string } | null;
 };
 
 export function mediaSrc(fileId: string): string {
@@ -82,6 +83,16 @@ export function sendRemote(
   paths: string[],
 ): Promise<void> {
   return invoke<void>("send_message", { peerId, peerType, localId, text, paths });
+}
+
+export function sendVoiceRemote(
+  peerId: string,
+  peerType: string,
+  localId: string,
+  data: string,
+  mime: string,
+): Promise<void> {
+  return invoke<void>("send_voice", { peerId, peerType, localId, data, mime });
 }
 
 export function openAttachment(fileId: string, name: string): Promise<void> {

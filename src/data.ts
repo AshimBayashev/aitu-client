@@ -5,6 +5,7 @@ import type {
   EmojiCategory,
   Folder,
   Message,
+  MessageReply,
   Settings,
   ThemeName,
 } from "./types";
@@ -78,6 +79,7 @@ function message(
   outgoing: boolean,
   now: number,
   author?: string,
+  reply?: MessageReply,
 ): Message {
   return {
     id: `${chatId}-${minutesAgo}`,
@@ -87,6 +89,7 @@ function message(
     sentAt: now - minutesAgo * 60_000,
     delivery: "sent",
     author,
+    reply,
   };
 }
 
@@ -94,13 +97,21 @@ export function seedMessages(now = Date.now()): Record<string, Message[]> {
   return {
     aigerim: [
       message("aigerim", 48, "Ты на связи? Хочу скинуть адрес.", false, now),
-      message("aigerim", 46, "Да, кидай.", true, now),
+      message("aigerim", 46, "Да, кидай.", true, now, undefined, {
+        id: "aigerim-48",
+        author: "Айгерим",
+        text: "Ты на связи? Хочу скинуть адрес.",
+      }),
       message("aigerim", 44, "Абая 10, подъезд 2. Буду через полчаса.", false, now),
       message("aigerim", 42, "Ок, выхожу 👍", true, now),
     ],
     team: [
       message("team", 180, "Макет на главную обновила.", false, now, "Асель"),
-      message("team", 150, "Гляну после обеда.", false, now, "Ерлан"),
+      message("team", 150, "Гляну после обеда.", false, now, "Ерлан", {
+        id: "team-180",
+        author: "Асель",
+        text: "Макет на главную обновила.",
+      }),
       message("team", 20, "Я поправлю список чатов сегодня.", true, now),
     ],
     mom: [

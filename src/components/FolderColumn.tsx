@@ -7,9 +7,6 @@ export function FolderColumn() {
 
   return (
     <aside className="rail">
-      <div className="brand" title="Aitu">
-        <span className="brand-mark">A</span>
-      </div>
       <nav className="folders" aria-label="Папки чатов">
         {folders
           .filter((folder) => {

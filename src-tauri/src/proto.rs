@@ -27,6 +27,16 @@ pub struct RemoteMessage {
     pub sent_at: i64,
     pub author: Option<String>,
     pub files: Vec<RemoteFile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reply: Option<RemoteReply>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteReply {
+    pub id: String,
+    pub author: String,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -216,27 +226,51 @@ pub fn parse_history(
             names.insert(id, party.title);
         }
     }
+    for raw in msgs(&root, 7) {
+        let fields = read_fields(raw)?;
+        let id = text(&fields, 1);
+        let title = text(&fields, 2);
+        if !id.is_empty() && !title.is_empty() {
+            names.insert(id, title);
+        }
+    }
 
-    let mut messages = Vec::new();
+    let mut timeline = Vec::new();
     for raw in msgs(&root, 2) {
         if let Some(message) = parse_message(raw, me, peer_type)? {
-            if message.text.is_empty() && message.files.is_empty() {
-                continue;
-            }
-            let author = if message.outgoing || !matches!(peer_type, "GROUP" | "DISCUSSION") {
-                None
-            } else {
-                names.get(&message.sender_id).filter(|name| !name.is_empty()).cloned()
-            };
-            messages.push(RemoteMessage {
-                id: message.id,
-                outgoing: message.outgoing,
-                text: message.text,
-                sent_at: message.sent_at,
-                author,
-                files: message.files,
-            });
+            timeline.push(message);
         }
+    }
+    let mut sources = Vec::new();
+    for raw in msgs(&root, 6) {
+        if let Some(message) = parse_message(raw, me, peer_type)? {
+            sources.push(message);
+        }
+    }
+    let mut index = std::collections::HashMap::<String, &ParsedBody>::new();
+    for message in sources.iter().chain(timeline.iter()) {
+        index.entry(message.id.clone()).or_insert(message);
+    }
+
+    let mut messages = Vec::new();
+    for message in &timeline {
+        if message.text.is_empty() && message.files.is_empty() {
+            continue;
+        }
+        let author = if message.outgoing || !matches!(peer_type, "GROUP" | "DISCUSSION") {
+            None
+        } else {
+            names.get(&message.sender_id).filter(|name| !name.is_empty()).cloned()
+        };
+        messages.push(RemoteMessage {
+            id: message.id.clone(),
+            outgoing: message.outgoing,
+            text: message.text.clone(),
+            sent_at: message.sent_at,
+            author,
+            files: message.files.clone(),
+            reply: quote_for(&message.reply_to, &index, &names),
+        });
     }
     messages.sort_by(|a, b| a.sent_at.cmp(&b.sent_at).then(a.id.cmp(&b.id)));
     Ok(messages)
@@ -257,6 +291,7 @@ struct ParsedBody {
     text: String,
     files: Vec<RemoteFile>,
     sent_at: i64,
+    reply_to: String,
 }
 
 fn party_user(raw: &[u8]) -> Result<Option<(String, Party)>, String> {
@@ -377,6 +412,7 @@ fn parse_message(raw: &[u8], me: &str, _peer_type: &str) -> Result<Option<Parsed
     let sender_id = sender.as_ref().map(|item| text(item, 1)).unwrap_or_default();
     let dialog_id = dialog.as_ref().map(|item| text(item, 1)).unwrap_or_default();
     let outgoing = !me.is_empty() && sender_id == me;
+    let reply_to = text(&fields, 5);
     let (text, files) = message_parts(&fields)?;
     Ok(Some(ParsedBody {
         id,
@@ -386,6 +422,7 @@ fn parse_message(raw: &[u8], me: &str, _peer_type: &str) -> Result<Option<Parsed
         text,
         files,
         sent_at: millis(var(&fields, 2).unwrap_or(0)),
+        reply_to,
     }))
 }
 
@@ -474,12 +511,71 @@ fn preview_label(text: &str, files: &[RemoteFile]) -> String {
     match files.first() {
         Some(file) if file.kind == "image" || file.kind == "gif" => "Фото".to_string(),
         Some(file) if file.kind == "video" => "Видео".to_string(),
+        Some(file) if file.kind == "audio" && is_voice_name(&file.name) => "Голосовое сообщение".to_string(),
         Some(file) if file.kind == "audio" || file.kind == "music" => "Аудио".to_string(),
         Some(file) if file.kind == "sticker" => "Стикер".to_string(),
         Some(file) if !file.name.is_empty() => file.name.clone(),
         Some(_) => "Файл".to_string(),
         None => String::new(),
     }
+}
+
+fn quote_for(
+    reply_to: &str,
+    index: &std::collections::HashMap<String, &ParsedBody>,
+    names: &std::collections::HashMap<String, String>,
+) -> Option<RemoteReply> {
+    if reply_to.is_empty() {
+        return None;
+    }
+    let Some(source) = index.get(reply_to) else {
+        return Some(RemoteReply {
+            id: reply_to.to_string(),
+            author: String::new(),
+            text: "Сообщение".to_string(),
+        });
+    };
+    let author = if source.outgoing {
+        "Вы".to_string()
+    } else {
+        names
+            .get(&source.sender_id)
+            .filter(|name| !name.is_empty())
+            .cloned()
+            .unwrap_or_default()
+    };
+    Some(RemoteReply {
+        id: reply_to.to_string(),
+        author,
+        text: quote_line(&source.text, &source.files),
+    })
+}
+
+fn quote_line(text: &str, files: &[RemoteFile]) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if !flat.is_empty() {
+        return trim_chars(&flat, 140);
+    }
+    let label = preview_label("", files);
+    if label.is_empty() {
+        "Сообщение".to_string()
+    } else {
+        label
+    }
+}
+
+fn trim_chars(value: &str, max: usize) -> String {
+    let mut chars = value.chars();
+    let trimmed: String = chars.by_ref().take(max).collect();
+    if chars.next().is_some() {
+        format!("{trimmed}…")
+    } else {
+        trimmed
+    }
+}
+
+fn is_voice_name(name: &str) -> bool {
+    name.to_ascii_lowercase().starts_with("voice.")
 }
 
 fn looks_like_dialogs(fields: &[(u32, Val)]) -> Result<bool, String> {
@@ -811,5 +907,73 @@ mod tests {
             chats[0].avatar.as_deref(),
             Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee?thumb")
         );
+    }
+
+    #[test]
+    fn history_shows_who_a_message_replies_to() {
+        let me = encode_peer("me", 0);
+        let them = encode_peer("u1", 0);
+        let mut user = Vec::new();
+        write_str(&mut user, 1, "u1");
+        write_str(&mut user, 2, "Айгерим");
+
+        let mut origin_body = Vec::new();
+        write_str(&mut origin_body, 1, "Ты на связи?");
+        let mut origin = Vec::new();
+        write_str(&mut origin, 1, "m-origin");
+        write_var(&mut origin, 2, 1_700_000_000_000);
+        write_msg(&mut origin, 3, &them);
+        write_msg(&mut origin, 12, &origin_body);
+
+        let mut reply_body = Vec::new();
+        write_str(&mut reply_body, 1, "Да, кидай.");
+        let mut reply = Vec::new();
+        write_str(&mut reply, 1, "m-reply");
+        write_var(&mut reply, 2, 1_700_000_060_000);
+        write_msg(&mut reply, 3, &me);
+        write_str(&mut reply, 5, "m-origin");
+        write_msg(&mut reply, 12, &reply_body);
+
+        let mut photo = Vec::new();
+        write_str(&mut photo, 1, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+        let mut image = Vec::new();
+        write_msg(&mut image, 1, &photo);
+        let mut media = Vec::new();
+        write_msg(&mut media, 12, &image);
+        let mut photo_body = Vec::new();
+        write_msg(&mut photo_body, 3, &media);
+        let mut photo_message = Vec::new();
+        write_str(&mut photo_message, 1, "m-photo");
+        write_var(&mut photo_message, 2, 1_699_000_000_000);
+        write_msg(&mut photo_message, 3, &me);
+        write_msg(&mut photo_message, 12, &photo_body);
+        let mut photo_reply_body = Vec::new();
+        write_str(&mut photo_reply_body, 1, "видел");
+        let mut photo_reply = Vec::new();
+        write_str(&mut photo_reply, 1, "m-photo-reply");
+        write_var(&mut photo_reply, 2, 1_700_000_120_000);
+        write_msg(&mut photo_reply, 3, &them);
+        write_str(&mut photo_reply, 5, "m-photo");
+        write_msg(&mut photo_reply, 12, &photo_reply_body);
+
+        let mut root = Vec::new();
+        write_msg(&mut root, 2, &origin);
+        write_msg(&mut root, 2, &reply);
+        write_msg(&mut root, 2, &photo_reply);
+        write_msg(&mut root, 3, &user);
+        write_msg(&mut root, 6, &photo_message);
+
+        let messages = parse_history(&root, "me", "USER").unwrap();
+        assert_eq!(messages.len(), 3);
+        let reply = messages.iter().find(|item| item.id == "m-reply").unwrap();
+        let quote = reply.reply.as_ref().unwrap();
+        assert_eq!(quote.id, "m-origin");
+        assert_eq!(quote.author, "Айгерим");
+        assert_eq!(quote.text, "Ты на связи?");
+        let photo = messages.iter().find(|item| item.id == "m-photo-reply").unwrap();
+        let photo_quote = photo.reply.as_ref().unwrap();
+        assert_eq!(photo_quote.author, "Вы");
+        assert_eq!(photo_quote.text, "Фото");
+        assert!(messages.iter().all(|item| item.id != "m-photo"));
     }
 }

@@ -2,39 +2,53 @@ import { useEffect, useMemo, useState } from "react";
 import { formatStamp } from "../data";
 import { Avatar } from "./Avatar";
 import { useApp } from "../state";
-import type { Chat } from "../types";
+import type { Chat, Message } from "../types";
+import { voicePreview } from "../voice";
 import { IconSearch } from "./icons";
 
 type MenuState = { chatId: string; left: number; top: number };
 
-function lastMessage(messages: { text: string; sentAt: number }[] | undefined) {
+function lastMessage(messages: Message[] | undefined) {
   if (!messages?.length) return null;
   return messages[messages.length - 1];
 }
 
-function stampOf(
-  chat: Chat,
-  messages: Record<string, { text: string; sentAt: number }[] | undefined>,
-  historyReady: Record<string, boolean>,
-) {
+function stampOf(chat: Chat, messages: Record<string, Message[] | undefined>, historyReady: Record<string, boolean>) {
   const last = historyReady[chat.id] ? lastMessage(messages[chat.id])?.sentAt ?? 0 : 0;
   return Math.max(chat.lastAt ?? 0, last);
 }
 
 function previewOf(
   chat: Chat,
-  messages: Record<string, { text: string; sentAt: number }[] | undefined>,
+  messages: Record<string, Message[] | undefined>,
   historyReady: Record<string, boolean>,
 ) {
   const last = lastMessage(messages[chat.id]);
   const historyTime = historyReady[chat.id] ? last?.sentAt ?? 0 : 0;
-  if (historyTime > 0 && historyTime >= (chat.lastAt ?? 0)) return last?.text ?? "";
-  return chat.preview || last?.text || "";
+  const own = last ? messagePreview(last) : "";
+  if (historyTime > 0 && historyTime >= (chat.lastAt ?? 0)) return own;
+  return voicePreview(chat.preview ?? "") || chat.preview || own;
+}
+
+function messagePreview(message: Message): string {
+  if (message.text) return message.text;
+  const file = message.files?.[0];
+  if (!file) return "";
+  return (
+    voicePreview(file.name) ||
+    (file.kind === "image" || file.kind === "gif"
+      ? "Фото"
+      : file.kind === "video"
+        ? "Видео"
+        : file.kind === "audio" || file.kind === "music"
+          ? "Аудио"
+          : file.name || "Файл")
+  );
 }
 
 function timeOf(
   chat: Chat,
-  messages: Record<string, { text: string; sentAt: number }[] | undefined>,
+  messages: Record<string, Message[] | undefined>,
   historyReady: Record<string, boolean>,
 ) {
   const stamp = stampOf(chat, messages, historyReady);

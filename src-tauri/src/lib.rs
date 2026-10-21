@@ -69,6 +69,7 @@ pub fn run() {
             aitu::list_dialogs,
             aitu::list_history,
             aitu::send_message,
+            aitu::send_voice,
             aitu::open_attachment,
             aitu::mark_read,
             aitu::set_active_chat,

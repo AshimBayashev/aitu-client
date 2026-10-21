@@ -20,6 +20,13 @@ export type ChatFile = {
   name: string;
   size: number;
   kind: FileKind | string;
+  localUrl?: string;
+};
+
+export type MessageReply = {
+  id: string;
+  author: string;
+  text: string;
 };
 
 export type Message = {
@@ -31,6 +38,7 @@ export type Message = {
   delivery: "sending" | "sent" | "failed";
   author?: string;
   files?: ChatFile[];
+  reply?: MessageReply;
 };
 
 export type Folder = {

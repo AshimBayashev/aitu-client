@@ -21,12 +21,14 @@ import {
   onSession,
   setActiveChat,
   sendRemote,
+  sendVoiceRemote,
   sessionStatus,
   type RemoteChat,
   type RemoteMessage,
 } from "./api";
 import { CHATS, DEFAULT_SETTINGS, seedFolders, seedMessages, seedUnread } from "./data";
 import { loadState, saveState } from "./storage";
+import { bytesToBase64, voiceFileName } from "./voice";
 import type { Chat, Folder, FolderDraft, Message, Settings } from "./types";
 
 export type Connection = "demo" | "checking" | "signed-out" | "connecting" | "live";
@@ -55,6 +57,7 @@ type AppModel = {
   setActiveFolder: (folderId: string) => void;
   selectChat: (chatId: string) => void;
   sendMessage: (chatId: string, text: string, paths?: string[]) => void;
+  sendVoice: (chatId: string, audio: Blob) => void;
   rememberEmoji: (char: string) => void;
   setSettingsOpen: (open: boolean) => void;
   openCreateFolder: () => void;
@@ -97,6 +100,7 @@ function toMessage(chatId: string, remote: RemoteMessage): Message {
     delivery: "sent",
     author: remote.author ?? undefined,
     files: remote.files ?? [],
+    reply: remote.reply?.id ? remote.reply : undefined,
   };
 }
 
@@ -430,6 +434,51 @@ export function AppProvider({ children }: { children: ReactNode }) {
               ),
             }));
           });
+      },
+      sendVoice: (chatId, audio) => {
+        if (audio.size === 0) return;
+        const id = crypto.randomUUID();
+        const name = voiceFileName(audio.type);
+        const localUrl = URL.createObjectURL(audio);
+        const pending: Message = {
+          id,
+          chatId,
+          outgoing: true,
+          text: "",
+          sentAt: Date.now(),
+          delivery: "sending",
+          files: [{ id: "", name, size: audio.size, kind: "audio", localUrl }],
+        };
+        setMessages((current) => ({
+          ...current,
+          [chatId]: [...(current[chatId] ?? []), pending],
+        }));
+        const chat = chats.find((item) => item.id === chatId);
+        const mark = (delivery: Message["delivery"]) => {
+          setMessages((current) => ({
+            ...current,
+            [chatId]: (current[chatId] ?? []).map((item) => (item.id === id ? { ...item, delivery } : item)),
+          }));
+        };
+        if (connection !== "live" || !chat?.peerType) {
+          window.setTimeout(() => mark("sent"), 280);
+          return;
+        }
+        const peerType = chat.peerType;
+        const mime = audio.type.split(";")[0] || "audio/wav";
+        void audio
+          .arrayBuffer()
+          .then((buffer) => sendVoiceRemote(chatId, peerType, id, bytesToBase64(new Uint8Array(buffer)), mime))
+          .then(async () => {
+            try {
+              const incoming = (await listHistory(chatId, peerType)).map((item) => toMessage(chatId, item));
+              setMessages((current) => ({ ...current, [chatId]: mergeMessages(current[chatId], incoming) }));
+              URL.revokeObjectURL(localUrl);
+            } catch {
+              mark("sent");
+            }
+          })
+          .catch(() => mark("failed"));
       },
       rememberEmoji: (char) => {
         setRecentEmoji((current) => [char, ...current.filter((item) => item !== char)].slice(0, 24));

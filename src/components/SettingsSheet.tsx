@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { ACCENTS, BACKGROUNDS, DENSITIES, FONTS, THEMES } from "../data";
 import { useApp } from "../state";
 import { IconClose } from "./icons";
@@ -5,10 +6,33 @@ import { IconClose } from "./icons";
 export function SettingsSheet() {
   const { settings, settingsOpen, setSettingsOpen, patchSettings, resetSettings, resetLocal, connection, accountName, logout } =
     useApp();
-  if (!settingsOpen) return null;
+  const [present, setPresent] = useState(false);
+  const [shown, setShown] = useState(false);
+
+  useEffect(() => {
+    if (settingsOpen) {
+      setPresent(true);
+      const frame = requestAnimationFrame(() => {
+        requestAnimationFrame(() => setShown(true));
+      });
+      return () => cancelAnimationFrame(frame);
+    }
+    setShown(false);
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) setPresent(false);
+  }, [settingsOpen]);
+
+  if (!present) return null;
 
   return (
-    <aside className="sheet" role="dialog" aria-label="Настройки">
+    <aside
+      className={shown ? "sheet" : "sheet sheet-hidden"}
+      role="dialog"
+      aria-label="Настройки"
+      onTransitionEnd={(event) => {
+        if (event.target !== event.currentTarget || event.propertyName !== "opacity" || settingsOpen) return;
+        setPresent(false);
+      }}
+    >
       <header>
         <h2>Внешний вид</h2>
         <button type="button" className="icon-button" aria-label="Закрыть настройки" onClick={() => setSettingsOpen(false)}>
