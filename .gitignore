@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Ключ подписи и собранный пакет Store
+store/*.pfx
+store/out/
