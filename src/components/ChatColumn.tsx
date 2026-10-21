@@ -4,7 +4,7 @@ import { Avatar } from "./Avatar";
 import { useApp } from "../state";
 import type { Chat, Message } from "../types";
 import { voicePreview } from "../voice";
-import { IconSearch } from "./icons";
+import { IconPin, IconSearch } from "./icons";
 
 type MenuState = { chatId: string; left: number; top: number };
 
@@ -65,6 +65,8 @@ export function ChatColumn() {
     activeChatId,
     selectChat,
     toggleChatFolder,
+    togglePin,
+    pinnedIds,
     connection,
     listError,
     historyReady,
@@ -86,9 +88,10 @@ export function ChatColumn() {
       })
       .sort((a, b) => {
         if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+        if (a.pinned && b.pinned) return pinnedIds.indexOf(a.id) - pinnedIds.indexOf(b.id);
         return stampOf(b, messages, historyReady) - stampOf(a, messages, historyReady);
       });
-  }, [allChats, folder, historyReady, messages, query]);
+  }, [allChats, folder, historyReady, messages, pinnedIds, query]);
 
   useEffect(() => {
     if (!menu) return;
@@ -103,16 +106,13 @@ export function ChatColumn() {
 
   function openMenu(chatId: string, x: number, y: number) {
     const width = 220;
-    const height = 220;
+    const height = 64 + editableFolders.length * 32;
     setMenu({
       chatId,
       left: Math.max(8, Math.min(x, window.innerWidth - width - 8)),
       top: Math.max(8, Math.min(y, window.innerHeight - height - 8)),
     });
   }
-
-  const pinned = chats.filter((chat) => chat.pinned);
-  const rest = chats.filter((chat) => !chat.pinned);
 
   return (
     <section className="chats" aria-label="Список чатов">
@@ -137,24 +137,7 @@ export function ChatColumn() {
                   : "В этой папке пока нет чатов"}
           </p>
         )}
-        {pinned.length > 0 && <p className="section-label">Закреплённые</p>}
-        {pinned.map((chat) => (
-          <ChatRow
-            key={chat.id}
-            chat={chat}
-            selected={chat.id === activeChatId}
-            preview={previewOf(chat, messages, historyReady)}
-            time={timeOf(chat, messages, historyReady)}
-            unread={unread[chat.id] ?? 0}
-            onOpen={() => {
-              setMenu(null);
-              selectChat(chat.id);
-            }}
-            onMenu={(x, y) => openMenu(chat.id, x, y)}
-          />
-        ))}
-        {rest.length > 0 && pinned.length > 0 && <p className="section-label">Чаты</p>}
-        {rest.map((chat) => (
+        {chats.map((chat) => (
           <ChatRow
             key={chat.id}
             chat={chat}
@@ -177,6 +160,18 @@ export function ChatColumn() {
           role="menu"
           onPointerDown={(event) => event.stopPropagation()}
         >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              togglePin(menu.chatId);
+              setMenu(null);
+            }}
+          >
+            <IconPin size={16} />
+            {allChats.find((chat) => chat.id === menu.chatId)?.pinned ? "Открепить" : "Закрепить"}
+          </button>
+          <div className="menu-rule" />
           <p>В папки</p>
           {editableFolders.length === 0 && <p className="menu-empty">Сначала создайте папку</p>}
           {editableFolders.map((item) => (
@@ -213,7 +208,13 @@ function ChatRow({
   onMenu: (x: number, y: number) => void;
 }) {
   return (
-    <div className={selected ? "chat-row selected" : "chat-row"}>
+    <div
+      className={selected ? "chat-row selected" : "chat-row"}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        onMenu(event.clientX, event.clientY);
+      }}
+    >
       <button type="button" className="chat-open" onClick={onOpen}>
         <Avatar title={chat.title} fileId={chat.avatar} />
         <span className="chat-copy">
@@ -223,7 +224,14 @@ function ChatRow({
           </span>
           <span className="chat-preview">
             <span>{preview}</span>
-            {unread > 0 && <span className="badge">{unread > 99 ? "99+" : unread}</span>}
+            <span className="chat-meta">
+              {chat.pinned && (
+                <span className="chat-pin" title="Закреплён">
+                  <IconPin size={16} />
+                </span>
+              )}
+              {unread > 0 && <span className="badge">{unread > 99 ? "99+" : unread}</span>}
+            </span>
           </span>
         </span>
       </button>

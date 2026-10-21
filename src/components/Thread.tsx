@@ -11,6 +11,13 @@ import { ChatProfile } from "./ChatProfile";
 import { EmojiPicker } from "./EmojiPicker";
 import { IconCheck, IconClip, IconClose, IconMic, IconPause, IconPlay, IconSend, IconSmile } from "./icons";
 
+function sameBurst(earlier: Message | undefined, later: Message | undefined) {
+  if (!earlier || !later) return false;
+  if (earlier.outgoing !== later.outgoing || earlier.author !== later.author) return false;
+  const gap = later.sentAt - earlier.sentAt;
+  return gap >= 0 && gap < 5 * 60_000;
+}
+
 function replyQuote(message: Message, title: string): MessageReply {
   const author = message.outgoing ? "Вы" : message.author || title;
   const flat = message.text.replace(/\s+/g, " ").trim();
@@ -417,12 +424,8 @@ export function Thread() {
           {connection === "live" && !historyReady[chat.id] && <p className="empty-copy">Загружаем сообщения…</p>}
           {historyError && <p className="login-error history-error">{historyError}</p>}
           {items.map((message, index) => {
-            const previous = items[index - 1];
-            const grouped =
-              previous &&
-              previous.outgoing === message.outgoing &&
-              previous.author === message.author &&
-              message.sentAt - previous.sentAt < 5 * 60_000;
+            const grouped = sameBurst(items[index - 1], message);
+            const continues = sameBurst(message, items[index + 1]);
             return (
               <article
                 key={message.id}
@@ -431,6 +434,7 @@ export function Thread() {
                   "msg",
                   message.outgoing ? "out" : "in",
                   grouped ? "grouped" : "group-start",
+                  continues ? "continues" : "",
                 ].join(" ")}
                 onContextMenu={(event) => {
                   if (event.target instanceof Element && event.target.closest("a")) return;

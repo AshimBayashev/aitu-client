@@ -109,6 +109,17 @@ export function IconPlay({ size = 16 }: IconProps) {
   );
 }
 
+export function IconPin({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" aria-hidden="true">
+      <path
+        fill="currentColor"
+        d="M11.5 2.9 15.5 6.9 13.1 9.3 13.4 12.4 9.8 8.9 5.9 12.8 3.6 13.4 4.2 11.1 8.1 7.2 4.6 3.6 7.7 3.9Z"
+      />
+    </svg>
+  );
+}
+
 export function IconPause({ size = 16 }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">

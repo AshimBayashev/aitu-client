@@ -19,6 +19,7 @@ export type Persisted = {
   messages: Record<string, Message[]>;
   unread: Record<string, number>;
   recentEmoji: string[];
+  pinned: string[] | null;
 };
 
 function isTheme(value: unknown): value is Settings["theme"] {
@@ -49,6 +50,18 @@ function sanitizeSettings(value: Partial<Settings> | undefined): Settings {
   return settings;
 }
 
+function sanitizePins(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const seen = new Set<string>();
+  const pins: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string" || !item || seen.has(item)) continue;
+    seen.add(item);
+    pins.push(item);
+  }
+  return pins;
+}
+
 function sanitizeFolders(value: unknown): Folder[] {
   if (!Array.isArray(value)) return seedFolders();
   const folders = value.filter((folder): folder is Folder => {
@@ -73,6 +86,7 @@ export function loadState(): Persisted {
     messages: seedMessages(),
     unread: seedUnread(),
     recentEmoji: [],
+    pinned: null,
   };
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -86,6 +100,7 @@ export function loadState(): Persisted {
       recentEmoji: Array.isArray(parsed.recentEmoji)
         ? parsed.recentEmoji.filter((item) => typeof item === "string").slice(0, 24)
         : [],
+      pinned: sanitizePins(parsed.pinned),
     };
   } catch {
     return fresh;

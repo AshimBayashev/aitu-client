@@ -66,6 +66,8 @@ type AppModel = {
   saveFolder: (draft: FolderDraft) => string | null;
   deleteFolder: (folderId: string) => void;
   toggleChatFolder: (folderId: string, chatId: string) => void;
+  togglePin: (chatId: string) => void;
+  pinnedIds: string[];
   login: () => void;
   logout: () => void;
 };
@@ -73,6 +75,15 @@ type AppModel = {
 const AppContext = createContext<AppModel | null>(null);
 
 const RESERVED_FOLDERS = new Set(["all", "direct", "group", "channel", "personal", "work", "channels"]);
+
+function seedPins(): string[] {
+  return CHATS.filter((chat) => chat.pinned).map((chat) => chat.id);
+}
+
+function withPins(list: Chat[], pins: string[]): Chat[] {
+  const pinned = new Set(pins);
+  return list.map((chat) => ({ ...chat, pinned: pinned.has(chat.id) }));
+}
 
 function toChat(remote: RemoteChat): Chat {
   const kind = remote.kind === "group" || remote.kind === "channel" ? remote.kind : "direct";
@@ -163,7 +174,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [messages, setMessages] = useState<Record<string, Message[]>>(desktop ? {} : initial.messages);
   const [unread, setUnread] = useState<Record<string, number>>(desktop ? {} : initial.unread);
   const [recentEmoji, setRecentEmoji] = useState(initial.recentEmoji);
-  const [chats, setChats] = useState<Chat[]>(desktop ? [] : CHATS);
+  const [pinnedIds, setPinnedIds] = useState<string[]>(initial.pinned ?? (desktop ? [] : seedPins()));
+  const [chats, setChats] = useState<Chat[]>(desktop ? [] : withPins(CHATS, initial.pinned ?? seedPins()));
   const [activeFolderId, setActiveFolderId] = useState("all");
   const [activeChatId, setActiveChatId] = useState<string | null>(desktop ? null : "aigerim");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -181,9 +193,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const activeRef = useRef(activeChatId);
   activeRef.current = activeChatId;
   const applyRef = useRef<(remote: RemoteChat[]) => void>(() => {});
+  const pinRef = useRef(pinnedIds);
+  pinRef.current = pinnedIds;
 
   applyRef.current = (remote) => {
-    const nextChats = remote.map(toChat);
+    const known = new Set(remote.map((chat) => chat.id));
+    const pins = pinRef.current.filter((id) => known.has(id));
+    if (pins.length !== pinRef.current.length) {
+      pinRef.current = pins;
+      setPinnedIds(pins);
+    }
+    const nextChats = withPins(remote.map(toChat), pins);
     setChats(nextChats);
     setFolders((current) => reconcileFolders(current, nextChats));
     setUnread(() => {
@@ -199,8 +219,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   useEffect(() => {
-    saveState({ settings, folders, messages, unread, recentEmoji });
-  }, [settings, folders, messages, unread, recentEmoji]);
+    saveState({ settings, folders, messages, unread, recentEmoji, pinned: pinnedIds });
+  }, [settings, folders, messages, unread, recentEmoji, pinnedIds]);
 
   useEffect(() => {
     if (!desktop) return;
@@ -355,14 +375,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setRecentEmoji([]);
         setFolderDraft(null);
         if (connection === "demo") {
+          const pins = seedPins();
+          pinRef.current = pins;
+          setPinnedIds(pins);
           setFolders(seedFolders());
           setMessages(seedMessages());
           setUnread(seedUnread());
-          setChats(CHATS);
+          setChats(withPins(CHATS, pins));
           setActiveFolderId("all");
           setActiveChatId("aigerim");
           return;
         }
+        pinRef.current = [];
+        setPinnedIds([]);
+        setChats((current) => current.map((chat) => ({ ...chat, pinned: false })));
         setFolders((current) => reconcileFolders(current.filter((folder) => folder.id === "all"), chats));
         setActiveFolderId("all");
       },
@@ -524,6 +550,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (activeFolderId === folderId) setActiveFolderId("all");
         setFolderDraft(null);
       },
+      pinnedIds,
+      togglePin: (chatId) => {
+        const next = pinRef.current.includes(chatId)
+          ? pinRef.current.filter((id) => id !== chatId)
+          : [chatId, ...pinRef.current];
+        pinRef.current = next;
+        setPinnedIds(next);
+        setChats((current) => current.map((chat) => (chat.id === chatId ? { ...chat, pinned: next.includes(chatId) } : chat)));
+      },
       toggleChatFolder: (folderId, chatId) => {
         setFolders((current) =>
           current.map((folder) => {
@@ -578,6 +613,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       listError,
       historyError,
       historyReady,
+      pinnedIds,
     ],
   );
 
