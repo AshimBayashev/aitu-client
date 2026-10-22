@@ -4,6 +4,8 @@
 
 ВАЖНО! Проект не связан с BTS Digital. Вход идёт в ваш собственный аккаунт через окно Passport.
 
+Установить для Windows можно из Microsoft Store: [Aitu здорового человека](https://apps.microsoft.com/detail/9ND7DC3NGZ6F?hl=ru-ru&gl=KZ).
+
 ## Функционал
 
 - Список чатов, история и отправка текста
