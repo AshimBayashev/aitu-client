@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   beginLogin,
   explain,
@@ -32,6 +33,31 @@ import { bytesToBase64, voiceFileName } from "./voice";
 import type { Chat, Folder, FolderDraft, Message, MessageReply, Settings } from "./types";
 
 export type Connection = "demo" | "checking" | "signed-out" | "connecting" | "live";
+
+export function userIsLooking(flags: {
+  minimized: boolean;
+  visible: boolean;
+  focused: boolean;
+  pageHidden: boolean;
+}): boolean {
+  return flags.visible && flags.focused && !flags.minimized && !flags.pageHidden;
+}
+
+async function readLooking(): Promise<boolean> {
+  const pageHidden = document.visibilityState === "hidden";
+  if (!inDesktop) return !pageHidden;
+  try {
+    const appWindow = getCurrentWindow();
+    const [minimized, visible, focused] = await Promise.all([
+      appWindow.isMinimized(),
+      appWindow.isVisible(),
+      appWindow.isFocused(),
+    ]);
+    return userIsLooking({ minimized, visible, focused, pageHidden });
+  } catch {
+    return !pageHidden;
+  }
+}
 
 type AppModel = {
   settings: Settings;
@@ -195,6 +221,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const applyRef = useRef<(remote: RemoteChat[]) => void>(() => {});
   const pinRef = useRef(pinnedIds);
   pinRef.current = pinnedIds;
+  const lookingRef = useRef(true);
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
 
   applyRef.current = (remote) => {
     const known = new Set(remote.map((chat) => chat.id));
@@ -208,7 +237,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setFolders((current) => reconcileFolders(current, nextChats));
     setUnread(() => {
       const next: Record<string, number> = {};
-      for (const chat of remote) next[chat.id] = chat.id === activeRef.current ? 0 : chat.unread;
+      for (const chat of remote) {
+        next[chat.id] = lookingRef.current && chat.id === activeRef.current ? 0 : chat.unread;
+      }
       return next;
     });
     setActiveChatId((current) => {
@@ -307,10 +338,49 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [desktop]);
 
   useEffect(() => {
+    if (!desktop) return;
+    let stop = false;
+    let unlisten = () => {};
+    const refresh = async () => {
+      const looking = await readLooking();
+      if (stop) return;
+      const was = lookingRef.current;
+      lookingRef.current = looking;
+      if (was || !looking) return;
+      const chatId = activeRef.current;
+      if (!chatId) return;
+      setUnread((current) => (current[chatId] ? { ...current, [chatId]: 0 } : current));
+      const peerType = chatsRef.current.find((chat) => chat.id === chatId)?.peerType;
+      const items = messagesRef.current[chatId];
+      const newest = items?.reduce<Message | null>((best, item) => (!best || item.sentAt >= best.sentAt ? item : best), null);
+      if (peerType && newest) void markRead(chatId, peerType, [newest.id]).catch(() => undefined);
+    };
+    void refresh();
+    const onVisibility = () => void refresh();
+    document.addEventListener("visibilitychange", onVisibility);
+    void getCurrentWindow()
+      .onFocusChanged(() => void refresh())
+      .then((fn) => {
+        if (stop) fn();
+        else unlisten = fn;
+      });
+    const timer = window.setInterval(() => void refresh(), 1000);
+    return () => {
+      stop = true;
+      unlisten();
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.clearInterval(timer);
+    };
+  }, [desktop]);
+
+  useEffect(() => {
     if (connection !== "live") return;
     const timer = window.setInterval(() => {
       void listDialogs()
-        .then((remote) => applyRef.current(remote))
+        .then(async (remote) => {
+          lookingRef.current = await readLooking();
+          applyRef.current(remote);
+        })
         .catch((error) => setListError(explain(error)));
     }, 12_000);
     return () => window.clearInterval(timer);
@@ -334,7 +404,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
           (best, item) => (!best || item.sentAt >= best.sentAt ? item : best),
           null,
         );
-        if (newest) void markRead(chatId, peerType, [newest.id]).catch(() => undefined);
+        lookingRef.current = await readLooking();
+        if (newest && lookingRef.current) void markRead(chatId, peerType, [newest.id]).catch(() => undefined);
       } catch (error) {
         if (stop) return;
         setHistoryReady((current) => ({ ...current, [chatId]: true }));

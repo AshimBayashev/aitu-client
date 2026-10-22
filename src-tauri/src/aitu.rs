@@ -284,7 +284,9 @@ fn notify_incoming(app: &AppHandle, previous: &HashMap<String, i64>, chats: &[Re
     let window = app.get_webview_window("main");
     let visible = window.as_ref().and_then(|item| item.is_visible().ok()).unwrap_or(false);
     let focused = window.as_ref().and_then(|item| item.is_focused().ok()).unwrap_or(false);
-    for alert in incoming_alerts(previous, chats, active.as_deref(), visible && focused) {
+    let minimized = window.as_ref().and_then(|item| item.is_minimized().ok()).unwrap_or(false);
+    let looking = visible && focused && !minimized;
+    for alert in incoming_alerts(previous, chats, active.as_deref(), looking) {
         let _ = app
             .notification()
             .builder()
